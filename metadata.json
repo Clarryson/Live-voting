@@ -1,0 +1,5 @@
+{
+  "name": "Mulembe Nation University Online Voting System",
+  "description": "A secure, real-time web and mobile-responsive application for university student guild elections with 2FA and live analytics.",
+  "requestFramePermissions": []
+}
