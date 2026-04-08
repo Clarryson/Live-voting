@@ -2,7 +2,7 @@
 
 > A secure, real-time, mobile-responsive online voting platform built for Mulembe Nation University Guild Elections. Supports two-factor authentication, anonymous ballots, live results, and a full admin control panel.
 
----
+-------
 
 ## 📋 Table of Contents
 
