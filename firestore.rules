@@ -16,30 +16,27 @@ service cloud.firestore {
 
     // Voters: Only admins can manage, users can read their own (if we had a user-to-voter mapping)
     // For this app, we'll allow public read of candidates and config, but restricted write.
-    match /voters/{voterId=**} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+    match /voters/{voterId} {
+      allow read: if true; // Allow backend to check registration
+      allow update: if true; // Allow backend to mark as voted
+      allow create, delete: if isAdmin();
     }
 
     match /candidates/{candidateId} {
       allow read: if true; // Publicly readable for the dashboard
-      allow write: if isAdmin();
+      allow update: if true; // Allow backend to increment vote count
+      allow create, delete: if isAdmin();
     }
 
     match /votes/{voteId} {
       allow read: if true; // Publicly readable for the live activity feed
-      allow create: if false; // Votes should be created via the backend API for integrity
+      allow create: if true; // Allow backend to cast votes
       allow delete: if isAdmin();
     }
 
     match /config/{configId} {
       allow read: if true;
       allow write: if isAdmin();
-    }
-
-    match /tokens/{tokenId} {
-      allow read: if false;
-      allow write: if false; // Tokens managed by backend
     }
     
     match /users/{userId} {

@@ -3,22 +3,32 @@ import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc,
+  collection, 
+  query, 
+  where, 
+  getDocs, 
+  limit,
+  runTransaction,
+  increment
+} from 'firebase/firestore';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize Firebase Admin
-// In this environment, we don't have a service account JSON, 
-// so we'll try to initialize with the project ID from the config.
+// Initialize Firebase
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 
-const adminApp = getApps().length === 0 
-  ? initializeApp({ projectId: firebaseConfig.projectId })
-  : getApps()[0];
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
-const db = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -27,58 +37,62 @@ const PORT = 3000;
 
 // API Endpoints for the voting flow
 
-// 1. Request 2FA Token
-app.post('/api/request-token', async (req, res) => {
-  const { admissionNumber } = req.body;
-  if (!admissionNumber) return res.status(400).json({ error: 'Admission Number is required' });
+// 1. Identify Voter (Registration Check)
+app.post('/api/identify-voter', async (req, res) => {
+  const { admissionNumber, email } = req.body;
+  if (!admissionNumber && !email) return res.status(400).json({ error: 'Admission Number or Email is required' });
 
   try {
-    const safeId = admissionNumber.trim().replace(/\//g, '_');
-    // Check if voter exists and hasn't voted
-    const voterRef = db.collection('voters').doc(safeId);
-    const voterDoc = await voterRef.get();
+    let voterData;
+    let safeId;
 
-    if (!voterDoc.exists) {
-      return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
+    if (admissionNumber) {
+      safeId = admissionNumber.trim().replace(/\//g, '_');
+      const voterRef = doc(db, 'voters', safeId);
+      const voterDoc = await getDoc(voterRef);
+      if (!voterDoc.exists()) {
+        return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
+      }
+      voterData = voterDoc.data();
+    } else {
+      // Search by email
+      const votersRef = collection(db, 'voters');
+      const q = query(votersRef, where('email', '==', email.trim()), limit(1));
+      const querySnapshot = await getDocs(q);
+      if (querySnapshot.empty) {
+        return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
+      }
+      const voterDoc = querySnapshot.docs[0];
+      voterData = voterDoc.data();
+      safeId = voterDoc.id;
     }
 
-    const voterData = voterDoc.data();
     if (voterData?.hasVoted) {
       return res.status(403).json({ error: 'You have already voted' });
     }
 
-    // Generate 6-digit token
-    const token = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
-
-    // Store token
-    await db.collection('tokens').doc(safeId).set({
-      admissionNumber,
-      token,
-      expiresAt: expiresAt.toISOString(),
+    res.json({ 
+      message: 'Voter identified', 
+      email: voterData?.email, 
+      admissionNumber: voterData?.admissionNumber
     });
-
-    // In a real app, send email here. For demo, we'll return it (or log it)
-    console.log(`[DEMO] Token for ${voterData?.email}: ${token}`);
-    
-    res.json({ message: 'Token sent to your student email', email: voterData?.email, demoToken: token });
   } catch (error) {
-    console.error('Error requesting token:', error);
+    console.error('Error identifying voter:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // 2. Cast Vote
 app.post('/api/cast-vote', async (req, res) => {
-  const { admissionNumber, token, candidateId } = req.body;
-  if (!admissionNumber || !token || !candidateId) {
+  const { admissionNumber, candidateId } = req.body;
+  if (!admissionNumber || !candidateId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
     // 1. Check election status
-    const configDoc = await db.collection('config').doc('config').get();
-    if (!configDoc.exists) return res.status(500).json({ error: 'Election configuration not found' });
+    const configDoc = await getDoc(doc(db, 'config', 'config'));
+    if (!configDoc.exists()) return res.status(500).json({ error: 'Election configuration not found' });
     
     const config = configDoc.data();
     const now = new Date();
@@ -91,24 +105,11 @@ app.post('/api/cast-vote', async (req, res) => {
 
     const safeId = admissionNumber.trim().replace(/\//g, '_');
 
-    // 2. Verify token
-    const tokenRef = db.collection('tokens').doc(safeId);
-    const tokenDoc = await tokenRef.get();
-
-    if (!tokenDoc.exists || tokenDoc.data()?.token !== token) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const expiresAt = new Date(tokenDoc.data()?.expiresAt);
-    if (now > expiresAt) {
-      return res.status(401).json({ error: 'Token has expired' });
-    }
-
-    // 3. Check if voter exists and has voted
-    const voterRef = db.collection('voters').doc(safeId);
-    const voterDoc = await voterRef.get();
+    // 2. Check if voter exists and has voted
+    const voterRef = doc(db, 'voters', safeId);
+    const voterDoc = await getDoc(voterRef);
     
-    if (!voterDoc.exists) {
+    if (!voterDoc.exists()) {
       return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
     }
     
@@ -116,17 +117,17 @@ app.post('/api/cast-vote', async (req, res) => {
       return res.status(403).json({ error: 'You have already voted' });
     }
 
-    // 4. Atomic Transaction: Mark as voted, record anonymous vote, increment candidate
-    await db.runTransaction(async (transaction) => {
-      const candidateRef = db.collection('candidates').doc(candidateId);
+    // 3. Atomic Transaction: Mark as voted, record anonymous vote, increment candidate
+    await runTransaction(db, async (transaction) => {
+      const candidateRef = doc(db, 'candidates', candidateId);
       const candidateDoc = await transaction.get(candidateRef);
-      if (!candidateDoc.exists) throw new Error('Candidate not found');
+      if (!candidateDoc.exists()) throw new Error('Candidate not found');
 
       // Mark voter as voted
       transaction.update(voterRef, { hasVoted: true });
 
       // Add anonymous vote
-      const voteRef = db.collection('votes').doc();
+      const voteRef = doc(collection(db, 'votes'));
       transaction.set(voteRef, {
         candidateId,
         faculty: voterDoc.data()?.faculty,
@@ -135,11 +136,8 @@ app.post('/api/cast-vote', async (req, res) => {
 
       // Increment candidate vote count
       transaction.update(candidateRef, {
-        voteCount: FieldValue.increment(1),
+        voteCount: increment(1),
       });
-
-      // Delete token
-      transaction.delete(tokenRef);
     });
 
     res.json({ message: 'Vote cast successfully' });

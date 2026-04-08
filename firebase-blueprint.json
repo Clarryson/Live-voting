@@ -48,24 +48,12 @@
         "status": { "type": "string", "enum": ["upcoming", "live", "closed"], "description": "Current election status." }
       },
       "required": ["openingTime", "closingTime", "status"]
-    },
-    "VerificationToken": {
-      "title": "VerificationToken",
-      "description": "A time-sensitive 2FA token for voting.",
-      "type": "object",
-      "properties": {
-        "admissionNumber": { "type": "string", "description": "Admission number the token is for." },
-        "token": { "type": "string", "description": "The unique 6-digit token." },
-        "expiresAt": { "type": "string", "format": "date-time", "description": "Token expiration time." }
-      },
-      "required": ["admissionNumber", "token", "expiresAt"]
     }
   },
   "firestore": {
     "voters": { "schema": "Voter", "description": "Collection of eligible voters." },
     "candidates": { "schema": "Candidate", "description": "Collection of candidates." },
     "votes": { "schema": "Vote", "description": "Collection of anonymous ballots." },
-    "config": { "schema": "ElectionConfig", "description": "Election settings." },
-    "tokens": { "schema": "VerificationToken", "description": "Active verification tokens." }
+    "config": { "schema": "ElectionConfig", "description": "Election settings." }
   }
 }

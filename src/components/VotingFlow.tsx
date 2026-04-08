@@ -60,14 +60,14 @@ import { cn } from '../lib/utils';
 
 export default function VotingFlow({ config }: { config: any }) {
   const [step, setStep] = useState<'identify' | 'verify' | 'ballot' | 'success'>('identify');
+  const [idMode, setIdMode] = useState<'admission' | 'email'>('admission');
   const [admissionNumber, setAdmissionNumber] = useState('');
-  const [token, setToken] = useState('');
+  const [voterEmailInput, setVoterEmailInput] = useState('');
   const [candidates, setCandidates] = useState<any[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
-  const [demoToken, setDemoToken] = useState('');
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [showRegistrationError, setShowRegistrationError] = useState(false);
 
@@ -118,26 +118,30 @@ export default function VotingFlow({ config }: { config: any }) {
     return () => unsub();
   }, []);
 
-  const handleRequestToken = async (e: React.FormEvent) => {
+  const handleIdentify = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isOffline) {
-      setError('You are currently offline. Token request requires a connection.');
+      setError('You are currently offline. Identification requires a connection.');
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/request-token', {
+      const payload = idMode === 'admission' 
+        ? { admissionNumber } 
+        : { email: voterEmailInput };
+
+      const res = await fetch('/api/identify-voter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ admissionNumber }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       
+      setAdmissionNumber(data.admissionNumber);
       setEmail(data.email);
-      setDemoToken(data.demoToken); // For demo purposes
-      setStep('verify');
+      setStep('ballot'); // Skip verify step
     } catch (err: any) {
       if (err.message.includes('not registered to vote')) {
         setShowRegistrationError(true);
@@ -149,17 +153,9 @@ export default function VotingFlow({ config }: { config: any }) {
     }
   };
 
-  const handleVerifyToken = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setStep('ballot');
-    setLoading(false);
-  };
-
   const handleCastVote = async () => {
     if (!selectedCandidate) return;
-    const voteData = { admissionNumber, token, candidateId: selectedCandidate };
+    const voteData = { admissionNumber, candidateId: selectedCandidate };
     
     if (isOffline) {
       localStorage.setItem('pending_vote', JSON.stringify(voteData));
@@ -309,17 +305,54 @@ export default function VotingFlow({ config }: { config: any }) {
               </div>
             </div>
 
-            <form onSubmit={handleRequestToken} className="space-y-6">
+            <form onSubmit={handleIdentify} className="space-y-6">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">Admission Number</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. BIT/001/2021"
-                  value={admissionNumber}
-                  onChange={(e) => setAdmissionNumber(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
-                />
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">
+                    {idMode === 'admission' ? 'Admission Number' : 'Student Email'}
+                  </label>
+                  <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                    <button 
+                      type="button"
+                      onClick={() => setIdMode('admission')}
+                      className={cn(
+                        "px-3 py-1 rounded-md text-[10px] font-black uppercase tracking-widest transition-all",
+                        idMode === 'admission' ? "bg-amber-500 text-zinc-950" : "text-zinc-500 hover:text-zinc-300"
+                      )}
+                    >
+                      ADM
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => setIdMode('email')}
+                      className={cn(
+                        "px-3 py-1 rounded-md text-[10px] font-black uppercase tracking-widest transition-all",
+                        idMode === 'email' ? "bg-amber-500 text-zinc-950" : "text-zinc-500 hover:text-zinc-300"
+                      )}
+                    >
+                      Email
+                    </button>
+                  </div>
+                </div>
+                {idMode === 'admission' ? (
+                  <input 
+                    type="text"
+                    required
+                    placeholder="e.g. BIT/001/2021"
+                    value={admissionNumber}
+                    onChange={(e) => setAdmissionNumber(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
+                  />
+                ) : (
+                  <input 
+                    type="email"
+                    required
+                    placeholder="e.g. student@mulembe.ac.ke"
+                    value={voterEmailInput}
+                    onChange={(e) => setVoterEmailInput(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
+                  />
+                )}
               </div>
 
               {error && (
@@ -335,54 +368,6 @@ export default function VotingFlow({ config }: { config: any }) {
                 className="w-full bg-amber-500 text-zinc-950 font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-amber-400 transition-colors disabled:opacity-50"
               >
                 {loading ? <Loader2 className="animate-spin" /> : <>Continue <ArrowRight size={18} /></>}
-              </button>
-            </form>
-          </motion.div>
-        )}
-
-        {step === 'verify' && (
-          <motion.div 
-            key="verify"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl backdrop-blur-sm"
-          >
-            <div className="flex items-center gap-4 mb-8">
-              <div className="w-12 h-12 bg-blue-500/10 border border-blue-500/20 rounded-2xl flex items-center justify-center text-blue-500">
-                <Mail size={24} />
-              </div>
-              <div>
-                <h2 className="text-xl font-bold">Two-Factor Verification</h2>
-                <p className="text-sm text-zinc-500">A token has been sent to <span className="text-zinc-300 font-bold">{email}</span></p>
-              </div>
-            </div>
-
-            <form onSubmit={handleVerifyToken} className="space-y-6">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-widest text-zinc-500 mb-2">6-Digit Token</label>
-                <input 
-                  type="text"
-                  required
-                  maxLength={6}
-                  placeholder="000000"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500 transition-colors text-center text-2xl font-mono tracking-[1em]"
-                />
-              </div>
-
-              {demoToken && (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-500 text-center">
-                  <span className="font-bold">DEMO MODE:</span> Use token <span className="font-mono font-bold">{demoToken}</span>
-                </div>
-              )}
-
-              <button 
-                type="submit"
-                className="w-full bg-blue-500 text-white font-bold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-400 transition-colors"
-              >
-                Verify Identity <ArrowRight size={18} />
               </button>
             </form>
           </motion.div>

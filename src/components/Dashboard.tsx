@@ -385,15 +385,17 @@ export default function Dashboard({ config }: { config: any }) {
                         </div>
                       </button>
                       {isLeading && (
-                        <div className="bg-amber-500 text-zinc-950 text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-2 shadow-lg shadow-amber-500/20">
-                          <Crown size={12} />
-                          PROJECTED WINNER
+                        <div className="bg-amber-500 text-zinc-950 text-[9px] sm:text-[10px] font-black px-2 sm:px-3 py-1 rounded-full flex items-center gap-1 sm:gap-2 shadow-lg shadow-amber-500/20 shrink-0">
+                          <Crown size={10} className="sm:w-3 sm:h-3" />
+                          <span className="hidden xs:inline">PROJECTED WINNER</span>
+                          <span className="xs:hidden">WINNER</span>
                         </div>
                       )}
                       {isTie && idx <= 1 && (
-                        <div className="bg-blue-500 text-white text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-2 shadow-lg shadow-blue-500/20 animate-pulse">
-                          <Users size={12} />
-                          TIE DETECTED
+                        <div className="bg-blue-500 text-white text-[9px] sm:text-[10px] font-black px-2 sm:px-3 py-1 rounded-full flex items-center gap-1 sm:gap-2 shadow-lg shadow-blue-500/20 animate-pulse shrink-0">
+                          <Users size={10} className="sm:w-3 sm:h-3" />
+                          <span className="hidden xs:inline">TIE DETECTED</span>
+                          <span className="xs:hidden">TIE</span>
                         </div>
                       )}
                     </div>

@@ -500,6 +500,7 @@ export default function AdminSeed() {
     setManifesto(candidate.manifesto || '');
     setImagePreview(candidate.imageUrl || null);
     setUploadedImageUrl(candidate.imageUrl || null);
+    setCandidateUploadSuccess(!!candidate.imageUrl);
     setActiveTab('candidates');
   };
 
