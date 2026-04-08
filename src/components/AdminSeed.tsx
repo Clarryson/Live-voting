@@ -133,8 +133,9 @@ export default function AdminSeed() {
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
     message: string;
-    onConfirm: () => void;
+    onConfirm: () => Promise<void>;
     danger?: boolean;
+    loading?: boolean;
   } | null>(null);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -557,6 +558,7 @@ export default function AdminSeed() {
       message: 'Are you sure you want to delete this voter? This action cannot be undone.',
       danger: true,
       onConfirm: async () => {
+        setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         try {
           await deleteDoc(doc(db, 'voters', id));
           setSuccessMessage('Voter deleted successfully!');
@@ -583,83 +585,90 @@ export default function AdminSeed() {
 
   const handleBulkImport = async () => {
     if (!bulkData.trim()) return;
-    setUploading(true);
-    try {
-      let data: any[] = [];
-      
-      // Try parsing as JSON first
-      try {
-        const parsed = JSON.parse(bulkData);
-        data = Array.isArray(parsed) ? parsed : [parsed];
-      } catch (e) {
-        // If JSON fails, parse as simple list
-        const lines = bulkData.split('\n').filter(l => l.trim());
-        data = lines.map(line => {
-          const parts = line.split(',').map(s => s.trim());
-          if (bulkMode === 'voters') {
-            const [adm, email, faculty] = parts;
-            return { admissionNumber: adm, email, faculty: faculty || 'Engineering' };
-          } else {
-            const [name, faculty, role, bio, manifesto] = parts;
-            return { 
-              name, 
-              faculty: faculty || 'Engineering', 
-              role: role || 'Chairperson',
-              bio: bio || '',
-              manifesto: manifesto || ''
-            };
+    
+    setConfirmModal({
+      title: `Bulk Import ${bulkMode === 'voters' ? 'Voters' : 'Candidates'}`,
+      message: `Are you sure you want to import these ${bulkMode}? This will add or update records in the database.`,
+      onConfirm: async () => {
+        setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
+        try {
+          let data: any[] = [];
+          
+          // Try parsing as JSON first
+          try {
+            const parsed = JSON.parse(bulkData);
+            data = Array.isArray(parsed) ? parsed : [parsed];
+          } catch (e) {
+            // If JSON fails, parse as simple list
+            const lines = bulkData.split('\n').filter(l => l.trim());
+            data = lines.map(line => {
+              const parts = line.split(',').map(s => s.trim());
+              if (bulkMode === 'voters') {
+                const [adm, email, faculty] = parts;
+                return { admissionNumber: adm, email, faculty: faculty || 'Engineering' };
+              } else {
+                const [name, faculty, role, bio, manifesto] = parts;
+                return { 
+                  name, 
+                  faculty: faculty || 'Engineering', 
+                  role: role || 'Chairperson',
+                  bio: bio || '',
+                  manifesto: manifesto || ''
+                };
+              }
+            });
           }
-        });
-      }
 
-      if (data.length === 0) throw new Error('No valid data found');
-      
-      const batch = writeBatch(db);
-      let count = 0;
-      
-      if (bulkMode === 'voters') {
-        for (const item of data) {
-          if (!item.admissionNumber || !item.email) continue;
-          const safeId = item.admissionNumber.trim().replace(/\//g, '_');
-          const ref = doc(db, 'voters', safeId);
-          batch.set(ref, {
-            admissionNumber: item.admissionNumber,
-            email: item.email,
-            faculty: item.faculty || 'Engineering',
-            hasVoted: false
-          });
-          count++;
-        }
-      } else {
-        for (const item of data) {
-          if (!item.name) continue;
-          const roleToUse = item.role || 'Chairperson';
-          if (!VALID_ROLES.includes(roleToUse)) {
-            throw new Error(`Invalid role "${roleToUse}" for candidate ${item.name}. Valid roles: ${VALID_ROLES.join(', ')}`);
+          if (data.length === 0) throw new Error('No valid data found');
+          
+          const batch = writeBatch(db);
+          let count = 0;
+          
+          if (bulkMode === 'voters') {
+            for (const item of data) {
+              if (!item.admissionNumber || !item.email) continue;
+              const safeId = item.admissionNumber.trim().replace(/\//g, '_');
+              const ref = doc(db, 'voters', safeId);
+              batch.set(ref, {
+                admissionNumber: item.admissionNumber,
+                email: item.email,
+                faculty: item.faculty || 'Engineering',
+                hasVoted: false
+              });
+              count++;
+            }
+          } else {
+            for (const item of data) {
+              if (!item.name) continue;
+              const roleToUse = item.role || 'Chairperson';
+              if (!VALID_ROLES.includes(roleToUse)) {
+                throw new Error(`Invalid role "${roleToUse}" for candidate ${item.name}. Valid roles: ${VALID_ROLES.join(', ')}`);
+              }
+              const id = item.name.toLowerCase().replace(/\s+/g, '-');
+              const ref = doc(db, 'candidates', id);
+              batch.set(ref, {
+                name: item.name,
+                faculty: item.faculty || 'Engineering',
+                role: roleToUse,
+                bio: item.bio || '',
+                manifesto: item.manifesto || '',
+                imageUrl: item.imageUrl || '',
+                voteCount: 0
+              });
+              count++;
+            }
           }
-          const id = item.name.toLowerCase().replace(/\s+/g, '-');
-          const ref = doc(db, 'candidates', id);
-          batch.set(ref, {
-            name: item.name,
-            faculty: item.faculty || 'Engineering',
-            role: roleToUse,
-            bio: item.bio || '',
-            manifesto: item.manifesto || '',
-            imageUrl: item.imageUrl || '',
-            voteCount: 0
-          });
-          count++;
+          
+          await batch.commit();
+          setBulkData('');
+          setSuccessMessage(`Successfully added ${count} ${bulkMode === 'voters' ? 'voters' : 'candidates'}!`);
+          setConfirmModal(null);
+        } catch (err: any) {
+          notifyError(err, 'bulk import', 'bulk_import');
+          setConfirmModal(null);
         }
       }
-      
-      await batch.commit();
-      setBulkData('');
-      setSuccessMessage(`Successfully added ${count} ${bulkMode === 'voters' ? 'voters' : 'candidates'}!`);
-    } catch (err: any) {
-      notifyError(err, 'bulk import', 'bulk_import');
-    } finally {
-      setUploading(false);
-    }
+    });
   };
 
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -708,7 +717,7 @@ export default function AdminSeed() {
       message: 'This will PERMANENTLY DELETE all cast votes and reset all candidates\' vote counts to zero. Voters will be able to vote again. Are you sure?',
       danger: true,
       onConfirm: async () => {
-        setConfirmModal(null);
+        setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         setUploading(true);
         try {
           // 1. Delete all documents in 'votes' collection
@@ -771,7 +780,7 @@ export default function AdminSeed() {
       message: 'CRITICAL: This will PERMANENTLY DELETE ALL registered voters from the portal. This cannot be undone. Are you absolutely sure?',
       danger: true,
       onConfirm: async () => {
-        setConfirmModal(null);
+        setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         setUploading(true);
         try {
           const votersSnap = await getDocs(collection(db, 'voters'));
@@ -850,6 +859,7 @@ export default function AdminSeed() {
       message: 'Are you sure you want to delete this candidate? This action cannot be undone.',
       danger: true,
       onConfirm: async () => {
+        setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         try {
           await deleteDoc(doc(db, 'candidates', id));
           setSuccessMessage('Candidate deleted successfully!');
@@ -1448,6 +1458,7 @@ export default function AdminSeed() {
                                   message: 'Are you sure you want to delete this archived election record? This cannot be undone.',
                                   danger: true,
                                   onConfirm: async () => {
+                                    setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
                                     try {
                                       await deleteDoc(doc(db, 'voting_history', item.id));
                                       setSuccessMessage('History record deleted.');
@@ -1763,14 +1774,16 @@ export default function AdminSeed() {
                 </button>
                 <button 
                   onClick={confirmModal.onConfirm}
+                  disabled={confirmModal.loading}
                   className={cn(
-                    "flex-1 px-6 py-4 rounded-xl font-black transition-all shadow-lg",
+                    "flex-1 px-6 py-4 rounded-xl font-black transition-all shadow-lg flex items-center justify-center gap-2",
+                    confirmModal.loading ? "opacity-70 cursor-not-allowed" : "",
                     confirmModal.danger 
                       ? "bg-red-500 text-white hover:bg-red-400 shadow-red-500/20" 
                       : "bg-amber-500 text-zinc-950 hover:bg-amber-400 shadow-amber-500/20"
                   )}
                 >
-                  Confirm
+                  {confirmModal.loading ? <Loader2 className="animate-spin" size={18} /> : 'Confirm'}
                 </button>
               </div>
             </motion.div>
