@@ -39,7 +39,7 @@ app.post('/api/request-token', async (req, res) => {
     const voterDoc = await voterRef.get();
 
     if (!voterDoc.exists) {
-      return res.status(404).json({ error: 'Admission Number not found in eligible list' });
+      return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
     }
 
     const voterData = voterDoc.data();
@@ -109,7 +109,7 @@ app.post('/api/cast-vote', async (req, res) => {
     const voterDoc = await voterRef.get();
     
     if (!voterDoc.exists) {
-      return res.status(404).json({ error: 'Voter record not found' });
+      return res.status(404).json({ error: 'You are not registered to vote. Seek clarification from admin.' });
     }
     
     if (voterDoc.data()?.hasVoted) {

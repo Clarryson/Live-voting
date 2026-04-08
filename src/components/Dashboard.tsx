@@ -58,9 +58,10 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, AreaChart, Area 
 } from 'recharts';
-import { Users, Vote, Percent, Target, Crown, Activity, Clock, TrendingUp, Info, X } from 'lucide-react';
+import { Users, User, Vote, Percent, Target, Crown, Activity, Clock, TrendingUp, Info, X, AlertTriangle, Bell } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { useRef } from 'react';
 
 const COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#ec4899'];
 
@@ -74,10 +75,29 @@ export default function Dashboard({ config }: { config: any }) {
   const [timeLeft, setTimeLeft] = useState<string>('--:--:--');
   const [lastUpdated, setLastUpdated] = useState<string>('just now');
   const [selectedCandidateForModal, setSelectedCandidateForModal] = useState<any | null>(null);
+  const [statusAlert, setStatusAlert] = useState<{ status: string; prev: string } | null>(null);
+  const prevStatusRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (config?.status && prevStatusRef.current && prevStatusRef.current !== config.status) {
+      setStatusAlert({ status: config.status, prev: prevStatusRef.current });
+      const timer = setTimeout(() => setStatusAlert(null), 8000);
+      return () => clearTimeout(timer);
+    }
+    if (config?.status) {
+      prevStatusRef.current = config.status;
+    }
+  }, [config?.status]);
 
   useEffect(() => {
     const unsubCandidates = onSnapshot(query(collection(db, 'candidates'), orderBy('voteCount', 'desc')), (snap) => {
-      setCandidates(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const fetched = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      // Secondary sort by name in case of tie
+      fetched.sort((a, b) => {
+        if (b.voteCount !== a.voteCount) return b.voteCount - a.voteCount;
+        return a.name.localeCompare(b.name);
+      });
+      setCandidates(fetched);
       setLastUpdated(new Date().toLocaleTimeString());
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'candidates');
@@ -169,7 +189,48 @@ export default function Dashboard({ config }: { config: any }) {
   const remainingVoters = Math.max(0, eligibleVoters - totalVotesCast);
 
   return (
-    <div className="space-y-8 pb-20">
+    <div className="space-y-8 pb-20 relative">
+      {/* Status Change Notification */}
+      <AnimatePresence>
+        {statusAlert && (
+          <motion.div 
+            initial={{ opacity: 0, y: -100, x: '-50%' }}
+            animate={{ opacity: 1, y: 20, x: '-50%' }}
+            exit={{ opacity: 0, y: -100, x: '-50%' }}
+            className="fixed top-20 left-1/2 z-[200] w-full max-w-md px-4"
+          >
+            <div className={cn(
+              "p-4 rounded-2xl border shadow-2xl backdrop-blur-md flex items-center gap-4",
+              statusAlert.status === 'live' ? "bg-green-500/10 border-green-500/30 text-green-500" :
+              statusAlert.status === 'paused' ? "bg-amber-500/10 border-amber-500/30 text-amber-500" :
+              "bg-red-500/10 border-red-500/30 text-red-500"
+            )}>
+              <div className={cn(
+                "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                statusAlert.status === 'live' ? "bg-green-500/20" :
+                statusAlert.status === 'paused' ? "bg-amber-500/20" :
+                "bg-red-500/20"
+              )}>
+                <Bell className="animate-bounce" size={20} />
+              </div>
+              <div className="flex-1">
+                <p className="text-[10px] font-black uppercase tracking-widest opacity-70">Election Status Updated</p>
+                <h4 className="text-sm font-black">
+                  The election is now <span className="uppercase">{statusAlert.status}</span>
+                </h4>
+                <p className="text-[10px] opacity-60">Changed from {statusAlert.prev}</p>
+              </div>
+              <button 
+                onClick={() => setStatusAlert(null)}
+                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header & Global Indicators */}
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 bg-zinc-900/40 border border-zinc-800 p-6 sm:p-8 rounded-[2rem] backdrop-blur-xl shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-500 animate-pulse" />
@@ -191,6 +252,10 @@ export default function Dashboard({ config }: { config: any }) {
                  config?.status === 'paused' ? 'PAUSED – MAINTENANCE' : 
                  'ENDED – FINALIZING RESULTS'}
               </span>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 text-blue-500 rounded-full">
+              <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+              <span className="text-[10px] font-black uppercase tracking-widest">Live Stream Active</span>
             </div>
             <span className="text-[10px] sm:text-xs text-zinc-500 font-medium">Last updated {lastUpdated}</span>
           </div>
@@ -223,7 +288,7 @@ export default function Dashboard({ config }: { config: any }) {
           icon={<Vote />} 
           label="Votes Cast" 
           value={totalVotesCast.toLocaleString()} 
-          progress={75}
+          progress={turnoutPercent}
           color="amber" 
         />
         <SummaryCard 
@@ -236,18 +301,25 @@ export default function Dashboard({ config }: { config: any }) {
         <SummaryCard 
           icon={<Percent />} 
           label="Voter Turnout" 
-          value={`${turnoutPercent}%`} 
-          trend="+3.2% (30m)"
+          value={`${turnoutPercent.toFixed(1)}%`} 
           color="green" 
           warning={turnoutPercent > 100}
         />
-        <SummaryCard 
-          icon={<Crown />} 
-          label="Win Projection — Chairperson" 
-          value={candidates[0]?.name || 'TBD'} 
-          subValue={candidates[0] ? `Leading by ${(candidates[0].voteCount - (candidates[1]?.voteCount || 0)).toLocaleString()} votes` : 'Calculating...'}
-          color="amber" 
-        />
+        {(() => {
+          const chairpersons = candidates.filter(c => c.role === 'Chairperson');
+          const leader = chairpersons[0];
+          const runnerUp = chairpersons[1];
+          return (
+            <SummaryCard 
+              icon={<Crown />} 
+              image={leader?.imageUrl}
+              label="Win Projection — Chairperson" 
+              value={leader?.name || 'TBD'} 
+              subValue={leader ? `Leading by ${(leader.voteCount - (runnerUp?.voteCount || 0)).toLocaleString()} votes` : 'Calculating...'}
+              color="amber" 
+            />
+          );
+        })()}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
@@ -263,8 +335,8 @@ export default function Dashboard({ config }: { config: any }) {
             </div>
             
             <div className="space-y-6">
-              {candidates.map((candidate, idx) => {
-                const isTie = idx === 0 && candidates.length > 1 && candidates[0].voteCount === candidates[1].voteCount && candidates[0].voteCount > 0;
+              {candidates.filter(c => c.role === 'Chairperson').map((candidate, idx, filteredArr) => {
+                const isTie = idx === 0 && filteredArr.length > 1 && filteredArr[0].voteCount === filteredArr[1].voteCount && filteredArr[0].voteCount > 0;
                 const isLeading = idx === 0 && !isTie;
 
                 return (
@@ -301,10 +373,10 @@ export default function Dashboard({ config }: { config: any }) {
                           />
                         ) : (
                           <div className={cn(
-                            "w-14 h-14 rounded-2xl border flex items-center justify-center text-2xl font-black shadow-inner transition-colors",
+                            "w-14 h-14 rounded-2xl border flex items-center justify-center shadow-inner transition-colors",
                             isLeading ? "bg-amber-500 text-zinc-950 border-amber-400" : isTie && idx <= 1 ? "bg-blue-500 text-white border-blue-400" : "bg-zinc-800 text-zinc-400 border-zinc-700 group-hover/btn:border-amber-500/50"
                           )}>
-                            {candidate.name[0]}
+                            <User size={24} />
                           </div>
                         )}
                         <div>
@@ -329,7 +401,14 @@ export default function Dashboard({ config }: { config: any }) {
                     <div className="space-y-4 relative z-10">
                       <div className="flex justify-between items-end">
                         <div>
-                          <p className="text-3xl font-mono font-black text-white tabular-nums">{candidate.voteCount.toLocaleString()}</p>
+                          <motion.p 
+                            key={candidate.voteCount}
+                            initial={{ scale: 1.2, color: '#f59e0b' }}
+                            animate={{ scale: 1, color: '#ffffff' }}
+                            className="text-3xl font-mono font-black tabular-nums"
+                          >
+                            {candidate.voteCount.toLocaleString()}
+                          </motion.p>
                           <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Total Ballots</p>
                         </div>
                         <div className="text-right">
@@ -382,23 +461,25 @@ export default function Dashboard({ config }: { config: any }) {
         <div className="lg:col-span-7 space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {/* Votes by Faculty Bar Chart */}
-            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative">
+            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative flex flex-col">
               <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Votes by Faculty</h3>
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                <BarChart data={facultyData} layout="vertical">
-                  <XAxis type="number" hide />
-                  <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} width={100} />
-                  <Tooltip 
-                    cursor={{ fill: 'rgba(255,255,255,0.05)' }}
-                    contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px', fontSize: '12px' }}
-                  />
-                  <Bar dataKey="votes" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={24}>
-                    {facultyData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <div className="flex-1 w-full min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={facultyData} layout="vertical">
+                    <XAxis type="number" hide />
+                    <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} width={100} />
+                    <Tooltip 
+                      cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                      contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px', fontSize: '12px' }}
+                    />
+                    <Bar dataKey="votes" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={24}>
+                      {facultyData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
             <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] flex items-center justify-center">
@@ -435,11 +516,22 @@ export default function Dashboard({ config }: { config: any }) {
                       key={item.id}
                       className="flex items-center gap-4 p-4 bg-zinc-950/40 border border-zinc-800/50 rounded-2xl group hover:border-blue-500/30 transition-all"
                     >
-                      <div className="flex flex-col items-center justify-center bg-zinc-900 px-3 py-2 rounded-xl border border-zinc-800">
+                      <div className="flex items-center justify-center bg-zinc-900 px-3 py-2 rounded-xl border border-zinc-800">
                         <span className="text-[10px] font-mono text-blue-500 font-black tracking-tighter leading-none">{time}</span>
                       </div>
                       
-                      <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)] shrink-0" />
+                      {candidate?.imageUrl ? (
+                        <img 
+                          src={candidate.imageUrl} 
+                          alt={candidate.name} 
+                          className="w-8 h-8 rounded-lg object-cover border border-zinc-800 shrink-0" 
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-500 shrink-0">
+                          <User size={14} />
+                        </div>
+                      )}
                       
                       <div className="flex-1 min-w-0">
                         <p className="text-[11px] font-bold text-zinc-300 truncate">
@@ -470,7 +562,7 @@ export default function Dashboard({ config }: { config: any }) {
       </div>
 
       {/* Footer: Hourly Voting Pace */}
-      <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative">
+      <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative flex flex-col">
         <div className="flex justify-between items-center mb-8">
           <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500">Hourly Voting Pace (Heartbeat)</h3>
           <div className="flex items-center gap-4">
@@ -480,31 +572,33 @@ export default function Dashboard({ config }: { config: any }) {
             </div>
           </div>
         </div>
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-          <AreaChart data={paceData}>
-            <defs>
-              <linearGradient id="colorVotes" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
-                <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-            <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
-            <YAxis axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
-            <Tooltip 
-              contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px' }}
-            />
-            <Area 
-              type="monotone" 
-              dataKey="votes" 
-              stroke="#f59e0b" 
-              fillOpacity={1} 
-              fill="url(#colorVotes)" 
-              strokeWidth={4} 
-              animationDuration={2000}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
+        <div className="flex-1 w-full min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={paceData}>
+              <defs>
+                <linearGradient id="colorVotes" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4}/>
+                  <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px' }}
+              />
+              <Area 
+                type="monotone" 
+                dataKey="votes" 
+                stroke="#f59e0b" 
+                fillOpacity={1} 
+                fill="url(#colorVotes)" 
+                strokeWidth={4} 
+                animationDuration={2000}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Candidate Detail Modal */}
@@ -527,8 +621,8 @@ export default function Dashboard({ config }: { config: any }) {
                       referrerPolicy="no-referrer"
                     />
                   ) : (
-                    <div className="w-16 h-16 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-2xl font-black text-zinc-400">
-                      {selectedCandidateForModal.name[0]}
+                    <div className="w-16 h-16 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-400">
+                      <User size={28} />
                     </div>
                   )}
                   <div>
@@ -593,7 +687,7 @@ export default function Dashboard({ config }: { config: any }) {
   );
 }
 
-function SummaryCard({ icon, label, value, subValue, trend, color, progress, warning }: any) {
+function SummaryCard({ icon, image, label, value, subValue, trend, color, progress, warning }: any) {
   const colorClasses: any = {
     amber: "text-amber-500 bg-amber-500/10 border-amber-500/20",
     blue: "text-blue-500 bg-blue-500/10 border-blue-500/20",
@@ -606,8 +700,12 @@ function SummaryCard({ icon, label, value, subValue, trend, color, progress, war
       "bg-zinc-900/30 border border-zinc-800 p-6 rounded-[2rem] backdrop-blur-sm relative overflow-hidden group hover:border-zinc-700 transition-all duration-500",
       warning && "border-red-500/50 shadow-[0_0_20px_-5px_rgba(239,68,68,0.3)]"
     )}>
-      <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center mb-6 border shadow-inner group-hover:scale-110 transition-transform duration-500", colorClasses[color])}>
-        {React.cloneElement(icon, { size: 24 })}
+      <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center mb-6 border shadow-inner group-hover:scale-110 transition-transform duration-500 overflow-hidden", colorClasses[color])}>
+        {image ? (
+          <img src={image} alt={label} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+        ) : (
+          React.cloneElement(icon, { size: 24 })
+        )}
       </div>
       
       <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-black mb-1">{label}</p>

@@ -107,7 +107,9 @@ export default function AdminSeed() {
   const [compressing, setCompressing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isDraggingBanner, setIsDraggingBanner] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [candidateUploadProgress, setCandidateUploadProgress] = useState<number | null>(null);
+  const [bannerUploadProgress, setBannerUploadProgress] = useState<number | null>(null);
+  const [candidateUploadSuccess, setCandidateUploadSuccess] = useState(false);
   
   // Voter State
   const [voterAdm, setVoterAdm] = useState('');
@@ -238,7 +240,7 @@ export default function AdminSeed() {
     
     // Instant Upload
     setUploading(true);
-    setUploadProgress(0);
+    setBannerUploadProgress(0);
     try {
       const fileName = sanitizeFileName(processedFile.name || 'banner.jpg');
       const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
@@ -250,7 +252,7 @@ export default function AdminSeed() {
         uploadTask.on('state_changed', 
           (snapshot) => {
             const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setUploadProgress(progress);
+            setBannerUploadProgress(progress);
             console.log('Banner upload progress:', Math.round(progress) + '%');
           }, 
           (error) => {
@@ -266,7 +268,7 @@ export default function AdminSeed() {
         );
       });
       setBannerUrl(url);
-      setUploadProgress(null);
+      setBannerUploadProgress(null);
     } catch (err) {
       console.error('Banner upload catch error:', err);
       notifyError(err, 'upload banner', 'config/banner');
@@ -363,7 +365,8 @@ export default function AdminSeed() {
 
     // Instant Upload
     setUploading(true);
-    setUploadProgress(0);
+    setCandidateUploadProgress(0);
+    setCandidateUploadSuccess(false);
     try {
       const fileName = sanitizeFileName(processedFile.name || 'candidate.jpg');
       const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
@@ -375,7 +378,7 @@ export default function AdminSeed() {
         uploadTask.on('state_changed', 
           (snapshot) => {
             const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setUploadProgress(progress);
+            setCandidateUploadProgress(progress);
             console.log('Image upload progress:', Math.round(progress) + '%');
           }, 
           (error) => {
@@ -391,7 +394,8 @@ export default function AdminSeed() {
         );
       });
       setUploadedImageUrl(url);
-      setUploadProgress(null);
+      setCandidateUploadProgress(null);
+      setCandidateUploadSuccess(true);
     } catch (err) {
       console.error('Image upload catch error:', err);
       notifyError(err, 'upload image', 'candidates/image');
@@ -474,6 +478,7 @@ export default function AdminSeed() {
       setImageFile(null);
       setImagePreview(null);
       setUploadedImageUrl(null);
+      setCandidateUploadSuccess(false);
       setEditingCandidateId(null);
       setSuccessMessage(editingCandidateId ? 'Candidate updated successfully!' : 'Candidate added successfully!');
       
@@ -1115,9 +1120,14 @@ export default function AdminSeed() {
                               {imagePreview ? (
                                 <>
                                   <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
+                                  {candidateUploadProgress !== null && (
+                                    <div className="absolute inset-0 bg-zinc-950/60 flex items-center justify-center backdrop-blur-[2px]">
+                                      <Loader2 className="animate-spin text-amber-500" size={24} />
+                                    </div>
+                                  )}
                                   <button 
                                     type="button" 
-                                    onClick={() => { setImageFile(null); setImagePreview(null); setUploadedImageUrl(null); }}
+                                    onClick={() => { setImageFile(null); setImagePreview(null); setUploadedImageUrl(null); setCandidateUploadSuccess(false); }}
                                     className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full hover:bg-red-600 transition-colors shadow-lg z-10"
                                     title="Remove Image"
                                   >
@@ -1132,14 +1142,24 @@ export default function AdminSeed() {
                             </div>
                             
                             <label className="flex-1 flex flex-col gap-2">
-                              <div className="flex items-center justify-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group relative overflow-hidden">
+                              <div className={cn(
+                                "flex items-center justify-center gap-2 bg-zinc-900 border rounded-xl px-4 py-3 cursor-pointer transition-all group relative overflow-hidden",
+                                candidateUploadSuccess ? "border-green-500/50 bg-green-500/5" : "border-zinc-800 hover:border-amber-500/50"
+                              )}>
                                 <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
-                                <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
-                                <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
-                                  {compressing ? 'Optimizing...' : imageFile ? 'Change Image' : 'Upload Profile Image'}
+                                {candidateUploadSuccess ? (
+                                  <CheckCircle2 size={18} className="text-green-500" />
+                                ) : (
+                                  <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
+                                )}
+                                <span className={cn(
+                                  "text-xs font-bold",
+                                  candidateUploadSuccess ? "text-green-500" : "text-zinc-500 group-hover:text-zinc-300"
+                                )}>
+                                  {compressing ? 'Optimizing...' : candidateUploadProgress !== null ? 'Uploading...' : candidateUploadSuccess ? 'Image Ready' : imageFile ? 'Change Image' : 'Upload Profile Image'}
                                 </span>
-                                {uploadProgress !== null && activeTab === 'candidates' && (
-                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                                {candidateUploadProgress !== null && (
+                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${candidateUploadProgress}%` }} />
                                 )}
                               </div>
                               {compressing && (
@@ -1147,8 +1167,10 @@ export default function AdminSeed() {
                                   <Zap size={8} className="animate-pulse" /> Shrinking file for speed...
                                 </p>
                               )}
-                              {uploadProgress !== null && activeTab === 'candidates' && (
-                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">Uploading: {Math.round(uploadProgress)}%</p>
+                              {candidateUploadProgress !== null && (
+                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">
+                                  Transferring to secure storage: {Math.round(candidateUploadProgress)}%
+                                </p>
                               )}
                             </label>
                           </div>
@@ -1659,12 +1681,12 @@ export default function AdminSeed() {
                                 <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
                                   {bannerFile ? 'Change Banner' : 'Upload Banner'}
                                 </span>
-                                {uploadProgress !== null && activeTab === 'control' && (
-                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                                {bannerUploadProgress !== null && (
+                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${bannerUploadProgress}%` }} />
                                 )}
                               </div>
-                              {uploadProgress !== null && activeTab === 'control' && (
-                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">Uploading: {Math.round(uploadProgress)}%</p>
+                              {bannerUploadProgress !== null && (
+                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">Uploading: {Math.round(bannerUploadProgress)}%</p>
                               )}
                             </label>
                           </div>

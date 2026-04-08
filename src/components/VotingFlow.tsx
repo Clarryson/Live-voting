@@ -69,6 +69,7 @@ export default function VotingFlow({ config }: { config: any }) {
   const [email, setEmail] = useState('');
   const [demoToken, setDemoToken] = useState('');
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [showRegistrationError, setShowRegistrationError] = useState(false);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -138,7 +139,11 @@ export default function VotingFlow({ config }: { config: any }) {
       setDemoToken(data.demoToken); // For demo purposes
       setStep('verify');
     } catch (err: any) {
-      setError(err.message);
+      if (err.message.includes('not registered to vote')) {
+        setShowRegistrationError(true);
+      } else {
+        setError(err.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -486,6 +491,44 @@ export default function VotingFlow({ config }: { config: any }) {
               Return Home
             </button>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Registration Error Modal */}
+      <AnimatePresence>
+        {showRegistrationError && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-zinc-950/90 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl text-center"
+            >
+              <div className="w-20 h-20 bg-red-500/10 border border-red-500/20 rounded-3xl flex items-center justify-center mx-auto mb-6 text-red-500">
+                <AlertCircle size={40} />
+              </div>
+              
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-white mb-4">
+                Not Registered
+              </h3>
+              
+              <p className="text-zinc-400 text-sm leading-relaxed mb-8">
+                You are not registered to vote. Please seek clarification from the election administration or the Dean of Students office.
+              </p>
+              
+              <div className="space-y-3">
+                <button 
+                  onClick={() => setShowRegistrationError(false)}
+                  className="w-full py-4 bg-zinc-100 text-zinc-950 font-black rounded-2xl hover:bg-white transition-all uppercase tracking-widest text-xs"
+                >
+                  Understood
+                </button>
+                <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                  Reference ID: {admissionNumber}
+                </p>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
