@@ -68,8 +68,17 @@ export default function App() {
   const [electionConfig, setElectionConfig] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const [isAdminPath, setIsAdminPath] = useState(false);
 
   useEffect(() => {
+    // Detect admin path
+    const checkPath = () => {
+      setIsAdminPath(window.location.pathname === '/admin');
+    };
+    
+    checkPath();
+    window.addEventListener('popstate', checkPath);
+    
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setUser(u);
     });
@@ -83,6 +92,7 @@ export default function App() {
       handleFirestoreError(error, OperationType.GET, 'config/config');
     });
     return () => {
+      window.removeEventListener('popstate', checkPath);
       unsubAuth();
       unsubConfig();
     };
@@ -114,6 +124,41 @@ export default function App() {
   }
 
   const isAdmin = user && ADMIN_EMAILS.includes(user.email || '');
+
+  // If on admin path but not logged in as admin, show login screen
+  if (isAdminPath && !isAdmin) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4">
+        <div className="max-w-md w-full space-y-8 text-center">
+          <div className="space-y-4">
+            <div className="w-20 h-20 bg-amber-500/10 border border-amber-500/20 rounded-3xl flex items-center justify-center mx-auto text-amber-500">
+              <ShieldCheck size={40} />
+            </div>
+            <h1 className="text-3xl font-black uppercase tracking-tighter">Admin Access</h1>
+            <p className="text-zinc-500 text-sm">Restricted area. Please authenticate to continue.</p>
+          </div>
+          
+          <button 
+            onClick={handleLogin}
+            className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-amber-500 text-zinc-950 rounded-2xl font-black uppercase tracking-widest hover:bg-amber-400 transition-all shadow-xl shadow-amber-500/20"
+          >
+            <LogIn size={20} />
+            <span>Login with Google</span>
+          </button>
+          
+          <button 
+            onClick={() => {
+              window.history.pushState({}, '', '/');
+              setIsAdminPath(false);
+            }}
+            className="text-xs font-bold text-zinc-600 hover:text-zinc-400 uppercase tracking-widest transition-colors"
+          >
+            Return to Voting
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-amber-500/30">
@@ -165,7 +210,7 @@ export default function App() {
               </button>
             </div>
 
-            {user ? (
+            {isAdmin && isAdminPath && (
               <div className="flex items-center gap-3">
                 <div className="hidden sm:block text-right">
                   <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-none">
@@ -181,14 +226,6 @@ export default function App() {
                   <LogOut size={20} />
                 </button>
               </div>
-            ) : (
-              <button 
-                onClick={handleLogin}
-                className="flex items-center gap-2 px-4 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg text-sm font-bold text-zinc-400 hover:text-zinc-100 transition-all"
-              >
-                <LogIn size={16} />
-                <span>Admin Login</span>
-              </button>
             )}
           </div>
         </div>
@@ -199,7 +236,7 @@ export default function App() {
         {view === 'dashboard' && <Dashboard config={electionConfig} />}
       </main>
 
-      {isAdmin && <AdminSeed />}
+      {isAdmin && isAdminPath && <AdminSeed />}
     </div>
   );
 }

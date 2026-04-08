@@ -12,7 +12,7 @@ const __dirname = path.dirname(__filename);
 // Initialize Firebase Admin
 // In this environment, we don't have a service account JSON, 
 // so we'll try to initialize with the project ID from the config.
-import firebaseConfig from './firebase-applet-config.json' assert { type: 'json' };
+import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 
 const adminApp = getApps().length === 0 
   ? initializeApp({ projectId: firebaseConfig.projectId })
@@ -77,7 +77,7 @@ app.post('/api/cast-vote', async (req, res) => {
 
   try {
     // 1. Check election status
-    const configDoc = await db.collection('config').doc('election').get();
+    const configDoc = await db.collection('config').doc('config').get();
     if (!configDoc.exists) return res.status(500).json({ error: 'Election configuration not found' });
     
     const config = configDoc.data();

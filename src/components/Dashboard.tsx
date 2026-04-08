@@ -67,6 +67,10 @@ const COLORS = ['#f59e0b', '#3b82f6', '#22c55e', '#ef4444', '#8b5cf6', '#ec4899'
 export default function Dashboard({ config }: { config: any }) {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [liveFeed, setLiveFeed] = useState<any[]>([]);
+  const [totalVotesCast, setTotalVotesCast] = useState(0);
+  const [eligibleVoters, setEligibleVoters] = useState(0);
+  const [facultyData, setFacultyData] = useState<any[]>([]);
+  const [paceData, setPaceData] = useState<any[]>([]);
   const [timeLeft, setTimeLeft] = useState<string>('--:--:--');
   const [lastUpdated, setLastUpdated] = useState<string>('just now');
   const [selectedCandidateForModal, setSelectedCandidateForModal] = useState<any | null>(null);
@@ -85,9 +89,44 @@ export default function Dashboard({ config }: { config: any }) {
       handleFirestoreError(error, OperationType.GET, 'votes');
     });
 
+    const unsubTotalVotes = onSnapshot(collection(db, 'votes'), (snap) => {
+      setTotalVotesCast(snap.size);
+      const counts: Record<string, number> = {};
+      const pace: Record<string, number> = {};
+      
+      snap.docs.forEach(doc => {
+        const data = doc.data();
+        const f = data.faculty;
+        if (f) counts[f] = (counts[f] || 0) + 1;
+        
+        const ts = data.timestamp;
+        if (ts) {
+          const hour = new Date(ts).getHours();
+          const hourStr = `${hour.toString().padStart(2, '0')}:00`;
+          pace[hourStr] = (pace[hourStr] || 0) + 1;
+        }
+      });
+      
+      const fData = Object.entries(counts).map(([name, votes]) => ({ name, votes }));
+      setFacultyData(fData.sort((a, b) => b.votes - a.votes));
+      
+      const pData = Object.entries(pace).map(([time, votes]) => ({ time, votes }));
+      setPaceData(pData.sort((a, b) => a.time.localeCompare(b.time)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'votes');
+    });
+
+    const unsubEligible = onSnapshot(collection(db, 'voters'), (snap) => {
+      setEligibleVoters(snap.size);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'voters');
+    });
+
     return () => {
       unsubCandidates();
       unsubVotes();
+      unsubTotalVotes();
+      unsubEligible();
     };
   }, []);
 
@@ -125,29 +164,9 @@ export default function Dashboard({ config }: { config: any }) {
   }, [config]);
 
   // Data from request
-  const totalVotesCast = 5355;
-  const eligibleVoters = 2376;
-  const turnoutPercent = 225.4; // As requested, even if > 100%
-  const winThreshold = 643;
-  const remainingVoters = 1082;
-
-  const facultyData = [
-    { name: 'Engineering', votes: 1240 },
-    { name: 'Business', votes: 1120 },
-    { name: 'Science', votes: 980 },
-    { name: 'Arts & Humanities', votes: 850 },
-    { name: 'Law', votes: 620 },
-    { name: 'Education', votes: 545 },
-  ];
-
-  const paceData = [
-    { time: '08:00', votes: 200 },
-    { time: '10:00', votes: 850 },
-    { time: '12:00', votes: 2400 }, // Peak lunch hour
-    { time: '14:00', votes: 3800 },
-    { time: '16:00', votes: 4900 },
-    { time: '18:00', votes: 5355 },
-  ];
+  const turnoutPercent = eligibleVoters > 0 ? (totalVotesCast / eligibleVoters) * 100 : 0;
+  const winThreshold = Math.ceil(eligibleVoters * 0.5) + 1;
+  const remainingVoters = Math.max(0, eligibleVoters - totalVotesCast);
 
   return (
     <div className="space-y-8 pb-20">
@@ -244,75 +263,93 @@ export default function Dashboard({ config }: { config: any }) {
             </div>
             
             <div className="space-y-6">
-              {candidates.map((candidate, idx) => (
-                <motion.div 
-                  layout
-                  key={candidate.id}
-                  className={cn(
-                    "group relative p-6 rounded-2xl border transition-all duration-500 overflow-hidden",
-                    idx === 0 
-                      ? "bg-amber-500/5 border-amber-500/40 shadow-[0_0_40px_-15px_rgba(245,158,11,0.2)]" 
-                      : "bg-zinc-950/40 border-zinc-800 hover:border-zinc-700"
-                  )}
-                >
-                  {idx === 0 && (
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 blur-[50px] -mr-16 -mt-16 rounded-full" />
-                  )}
-                  
-                  <div className="flex justify-between items-start mb-4 relative z-10">
-                    <button 
-                      onClick={() => setSelectedCandidateForModal(candidate)}
-                      className="flex items-center gap-4 text-left group/btn"
-                    >
-                      {candidate.imageUrl ? (
-                        <img 
-                          src={candidate.imageUrl} 
-                          alt={candidate.name} 
-                          className="w-14 h-14 rounded-2xl object-cover border border-zinc-800 shadow-inner group-hover/btn:border-amber-500/50 transition-colors" 
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className={cn(
-                          "w-14 h-14 rounded-2xl border flex items-center justify-center text-2xl font-black shadow-inner transition-colors",
-                          idx === 0 ? "bg-amber-500 text-zinc-950 border-amber-400" : "bg-zinc-800 text-zinc-400 border-zinc-700 group-hover/btn:border-amber-500/50"
-                        )}>
-                          {candidate.name[0]}
+              {candidates.map((candidate, idx) => {
+                const isTie = idx === 0 && candidates.length > 1 && candidates[0].voteCount === candidates[1].voteCount && candidates[0].voteCount > 0;
+                const isLeading = idx === 0 && !isTie;
+
+                return (
+                  <motion.div 
+                    layout
+                    key={candidate.id}
+                    className={cn(
+                      "group relative p-6 rounded-2xl border transition-all duration-500 overflow-hidden",
+                      isLeading 
+                        ? "bg-amber-500/5 border-amber-500/40 shadow-[0_0_40px_-15px_rgba(245,158,11,0.2)]" 
+                        : isTie && idx <= 1
+                          ? "bg-blue-500/5 border-blue-500/40 shadow-[0_0_40px_-15px_rgba(59,130,246,0.2)]"
+                          : "bg-zinc-950/40 border-zinc-800 hover:border-zinc-700"
+                    )}
+                  >
+                    {(isLeading || (isTie && idx <= 1)) && (
+                      <div className={cn(
+                        "absolute top-0 right-0 w-32 h-32 blur-[50px] -mr-16 -mt-16 rounded-full",
+                        isLeading ? "bg-amber-500/10" : "bg-blue-500/10"
+                      )} />
+                    )}
+                    
+                    <div className="flex justify-between items-start mb-4 relative z-10">
+                      <button 
+                        onClick={() => setSelectedCandidateForModal(candidate)}
+                        className="flex items-center gap-4 text-left group/btn"
+                      >
+                        {candidate.imageUrl ? (
+                          <img 
+                            src={candidate.imageUrl} 
+                            alt={candidate.name} 
+                            className="w-14 h-14 rounded-2xl object-cover border border-zinc-800 shadow-inner group-hover/btn:border-amber-500/50 transition-colors" 
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className={cn(
+                            "w-14 h-14 rounded-2xl border flex items-center justify-center text-2xl font-black shadow-inner transition-colors",
+                            isLeading ? "bg-amber-500 text-zinc-950 border-amber-400" : isTie && idx <= 1 ? "bg-blue-500 text-white border-blue-400" : "bg-zinc-800 text-zinc-400 border-zinc-700 group-hover/btn:border-amber-500/50"
+                          )}>
+                            {candidate.name[0]}
+                          </div>
+                        )}
+                        <div>
+                          <h4 className="text-lg font-black tracking-tight text-white group-hover/btn:text-amber-500 transition-colors">{candidate.name}</h4>
+                          <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">{candidate.role} • {candidate.faculty}</p>
+                        </div>
+                      </button>
+                      {isLeading && (
+                        <div className="bg-amber-500 text-zinc-950 text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-2 shadow-lg shadow-amber-500/20">
+                          <Crown size={12} />
+                          PROJECTED WINNER
                         </div>
                       )}
-                      <div>
-                        <h4 className="text-lg font-black tracking-tight text-white group-hover/btn:text-amber-500 transition-colors">{candidate.name}</h4>
-                        <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">{candidate.role} • {candidate.faculty}</p>
-                      </div>
-                    </button>
-                    {idx === 0 && (
-                      <div className="bg-amber-500 text-zinc-950 text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-2 shadow-lg shadow-amber-500/20">
-                        <Crown size={12} />
-                        PROJECTED WINNER
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-4 relative z-10">
-                    <div className="flex justify-between items-end">
-                      <div>
-                        <p className="text-3xl font-mono font-black text-white tabular-nums">{candidate.voteCount.toLocaleString()}</p>
-                        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Total Ballots</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-2xl font-black text-amber-500">{((candidate.voteCount / totalVotesCast) * 100).toFixed(1)}%</p>
-                        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Share</p>
-                      </div>
+                      {isTie && idx <= 1 && (
+                        <div className="bg-blue-500 text-white text-[10px] font-black px-3 py-1 rounded-full flex items-center gap-2 shadow-lg shadow-blue-500/20 animate-pulse">
+                          <Users size={12} />
+                          TIE DETECTED
+                        </div>
+                      )}
                     </div>
 
-                    <div className="h-2 w-full bg-zinc-800/50 rounded-full overflow-hidden p-[2px] border border-zinc-700/30">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${(candidate.voteCount / totalVotesCast) * 100}%` }}
-                        className={cn(
-                          "h-full rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)]", 
-                          idx === 0 ? "bg-gradient-to-r from-amber-600 to-amber-400" : "bg-zinc-500"
-                        )}
-                      />
+                    <div className="space-y-4 relative z-10">
+                      <div className="flex justify-between items-end">
+                        <div>
+                          <p className="text-3xl font-mono font-black text-white tabular-nums">{candidate.voteCount.toLocaleString()}</p>
+                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Total Ballots</p>
+                        </div>
+                        <div className="text-right">
+                          <p className={cn("text-2xl font-black", isLeading ? "text-amber-500" : isTie && idx <= 1 ? "text-blue-500" : "text-zinc-500")}>
+                            {totalVotesCast > 0 ? ((candidate.voteCount / totalVotesCast) * 100).toFixed(1) : '0.0'}%
+                          </p>
+                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Share</p>
+                        </div>
+                      </div>
+
+                      <div className="h-2 w-full bg-zinc-800/50 rounded-full overflow-hidden p-[2px] border border-zinc-700/30">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${totalVotesCast > 0 ? (candidate.voteCount / totalVotesCast) * 100 : 0}%` }}
+                          className={cn(
+                            "h-full rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)]", 
+                            isLeading ? "bg-gradient-to-r from-amber-600 to-amber-400" : isTie && idx <= 1 ? "bg-gradient-to-r from-blue-600 to-blue-400" : "bg-zinc-500"
+                          )}
+                        />
+                      </div>
                     </div>
 
                     {/* Bio & Manifesto */}
@@ -334,9 +371,9 @@ export default function Dashboard({ config }: { config: any }) {
                         </p>
                       </div>
                     </div>
-                  </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -345,9 +382,9 @@ export default function Dashboard({ config }: { config: any }) {
         <div className="lg:col-span-7 space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {/* Votes by Faculty Bar Chart */}
-            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px]">
+            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative">
               <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Votes by Faculty</h3>
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                 <BarChart data={facultyData} layout="vertical">
                   <XAxis type="number" hide />
                   <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} width={100} />
@@ -433,7 +470,7 @@ export default function Dashboard({ config }: { config: any }) {
       </div>
 
       {/* Footer: Hourly Voting Pace */}
-      <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px]">
+      <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative">
         <div className="flex justify-between items-center mb-8">
           <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500">Hourly Voting Pace (Heartbeat)</h3>
           <div className="flex items-center gap-4">
@@ -443,7 +480,7 @@ export default function Dashboard({ config }: { config: any }) {
             </div>
           </div>
         </div>
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
           <AreaChart data={paceData}>
             <defs>
               <linearGradient id="colorVotes" x1="0" y1="0" x2="0" y2="1">

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage, auth } from '../lib/firebase';
-import { doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { Database, Loader2, Plus, Trash2, Upload, X, UserPlus, User, Users, Image as ImageIcon, FileJson, CheckCircle2, Pencil, Settings, Clock } from 'lucide-react';
+import { doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch, getDocs, query, addDoc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import * as XLSX from 'xlsx';
+import imageCompression from 'browser-image-compression';
+import { Database, Loader2, Plus, Trash2, Upload, X, UserPlus, User, Users, Image as ImageIcon, FileJson, CheckCircle2, Pencil, Settings, Clock, FileSpreadsheet, RotateCcw, Info, Download, History, Zap, Vote } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
@@ -81,6 +83,7 @@ export default function AdminSeed() {
   const [showModal, setShowModal] = useState(false);
   const [candidates, setCandidates] = useState<any[]>([]);
   const [voters, setVoters] = useState<any[]>([]);
+  const [history, setHistory] = useState<any[]>([]);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -99,16 +102,22 @@ export default function AdminSeed() {
   const [manifesto, setManifesto] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isDraggingBanner, setIsDraggingBanner] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   
   // Voter State
   const [voterAdm, setVoterAdm] = useState('');
   const [voterEmail, setVoterEmail] = useState('');
   const [voterFaculty, setVoterFaculty] = useState('Engineering');
   const [editingVoterId, setEditingVoterId] = useState<string | null>(null);
+  const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
   
   // Sidebar State
-  const [activeTab, setActiveTab] = useState<'candidates' | 'voters' | 'bulk' | 'control'>('candidates');
+  const [activeTab, setActiveTab] = useState<'candidates' | 'voters' | 'bulk' | 'control' | 'history'>('candidates');
   
   // Settings State
   const [electionName, setElectionName] = useState('Mulembe Nation University Guild Elections 2025');
@@ -121,6 +130,12 @@ export default function AdminSeed() {
   
   // Bulk State
   const [bulkData, setBulkData] = useState('');
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    danger?: boolean;
+  } | null>(null);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -155,6 +170,11 @@ export default function AdminSeed() {
     }, (error) => {
       notifyError(error, 'load voters', 'voters');
     });
+    const unsubHistory = onSnapshot(query(collection(db, 'voting_history'), orderBy('exportedAt', 'desc')), (snap) => {
+      setHistory(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      notifyError(error, 'load history', 'voting_history');
+    });
     const unsubConfig = onSnapshot(doc(db, 'config', 'config'), (doc) => {
       if (doc.exists()) {
         const data = doc.data();
@@ -179,15 +199,106 @@ export default function AdminSeed() {
     return () => {
       unsubCandidates();
       unsubVoters();
+      unsubHistory();
       unsubConfig();
     };
   }, []);
 
-  const handleBannerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const sanitizeFileName = (name: string) => {
+    return name.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+  };
+
+  const processBanner = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Invalid file type. Please select an image.');
+      return;
+    }
+    let processedFile = file;
+    console.log('Starting banner process:', file.name, file.size, file.type);
+    
+    // Compression
+    setCompressing(true);
+    try {
+      const options = {
+        maxSizeMB: 0.5,
+        maxWidthOrHeight: 1200,
+        useWebWorker: true
+      };
+      processedFile = await imageCompression(file, options);
+      console.log('Banner compressed:', processedFile.size);
+    } catch (err) {
+      console.error('Banner compression failed:', err);
+    } finally {
+      setCompressing(false);
+    }
+
+    setBannerFile(processedFile);
+    setBannerPreview(URL.createObjectURL(processedFile));
+    
+    // Instant Upload
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      const fileName = sanitizeFileName(processedFile.name || 'banner.jpg');
+      const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
+      console.log('Uploading banner to:', storageRef.fullPath);
+      
+      const uploadTask = uploadBytesResumable(storageRef, processedFile);
+      
+      const url = await new Promise<string>((resolve, reject) => {
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadProgress(progress);
+            console.log('Banner upload progress:', Math.round(progress) + '%');
+          }, 
+          (error) => {
+            console.error('Banner upload task error:', error);
+            reject(error);
+          }, 
+          () => {
+            getDownloadURL(uploadTask.snapshot.ref).then(url => {
+              console.log('Banner upload complete. URL:', url);
+              resolve(url);
+            }).catch(reject);
+          }
+        );
+      });
+      setBannerUrl(url);
+      setUploadProgress(null);
+    } catch (err) {
+      console.error('Banner upload catch error:', err);
+      notifyError(err, 'upload banner', 'config/banner');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleBannerChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setBannerFile(file);
-      setBannerPreview(URL.createObjectURL(file));
+      await processBanner(e.target.files[0]);
+    }
+  };
+
+  const handleBannerDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingBanner(true);
+  };
+
+  const handleBannerDragLeave = () => {
+    setIsDraggingBanner(false);
+  };
+
+  const handleBannerDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingBanner(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.type.startsWith('image/')) {
+        await processBanner(file);
+      } else {
+        setErrorMessage('Please drop an image file');
+      }
     }
   };
 
@@ -201,16 +312,9 @@ export default function AdminSeed() {
     e.preventDefault();
     setUploading(true);
     try {
-      let finalBannerUrl = bannerUrl;
-      if (bannerFile) {
-        const storageRef = ref(storage, `config/banner_${Date.now()}_${bannerFile.name}`);
-        const snapshot = await uploadBytes(storageRef, bannerFile);
-        finalBannerUrl = await getDownloadURL(snapshot.ref);
-      }
-
       const configData: any = {
         electionName,
-        bannerUrl: finalBannerUrl,
+        bannerUrl: bannerUrl,
         status: electionStatus
       };
 
@@ -229,11 +333,97 @@ export default function AdminSeed() {
     }
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const processImage = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Invalid file type. Please select an image.');
+      return;
+    }
+    let processedFile = file;
+    console.log('Starting image process:', file.name, file.size, file.type);
+    
+    // Compression
+    setCompressing(true);
+    try {
+      const options = {
+        maxSizeMB: 0.2,
+        maxWidthOrHeight: 600,
+        useWebWorker: true
+      };
+      processedFile = await imageCompression(file, options);
+      console.log('Image compressed:', processedFile.size);
+    } catch (err) {
+      console.error('Image compression failed:', err);
+    } finally {
+      setCompressing(false);
+    }
+
+    setImageFile(processedFile);
+    setImagePreview(URL.createObjectURL(processedFile));
+
+    // Instant Upload
+    setUploading(true);
+    setUploadProgress(0);
+    try {
+      const fileName = sanitizeFileName(processedFile.name || 'candidate.jpg');
+      const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
+      console.log('Uploading image to:', storageRef.fullPath);
+      
+      const uploadTask = uploadBytesResumable(storageRef, processedFile);
+      
+      const url = await new Promise<string>((resolve, reject) => {
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadProgress(progress);
+            console.log('Image upload progress:', Math.round(progress) + '%');
+          }, 
+          (error) => {
+            console.error('Image upload task error:', error);
+            reject(error);
+          }, 
+          () => {
+            getDownloadURL(uploadTask.snapshot.ref).then(url => {
+              console.log('Image upload complete. URL:', url);
+              resolve(url);
+            }).catch(reject);
+          }
+        );
+      });
+      setUploadedImageUrl(url);
+      setUploadProgress(null);
+    } catch (err) {
+      console.error('Image upload catch error:', err);
+      notifyError(err, 'upload image', 'candidates/image');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setImageFile(file);
-      setImagePreview(URL.createObjectURL(file));
+      await processImage(e.target.files[0]);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.type.startsWith('image/')) {
+        await processImage(file);
+      } else {
+        setErrorMessage('Please drop an image file');
+      }
     }
   };
 
@@ -242,40 +432,29 @@ export default function AdminSeed() {
     
     const trimmedName = name.trim();
     if (!trimmedName) {
-      alert('Please enter a candidate name');
+      setErrorMessage('Please enter a candidate name');
       return;
     }
     if (!faculty) {
-      alert('Please select a faculty');
+      setErrorMessage('Please select a faculty');
       return;
     }
     
     const trimmedRole = role.trim();
     if (!trimmedRole || !VALID_ROLES.includes(trimmedRole)) {
-      alert('Please select a valid guild position');
+      setErrorMessage('Please select a valid guild position');
       return;
     }
 
-    if (!imageFile) {
-      alert('Please upload a candidate profile image');
+    if (!uploadedImageUrl && !editingCandidateId) {
+      setErrorMessage('Please upload a candidate profile image');
       return;
     }
     
     setUploading(true);
-    console.log('Adding candidate:', trimmedName);
     
     try {
-      let imageUrl = '';
-      if (imageFile) {
-        console.log('Uploading image...');
-        const storageRef = ref(storage, `candidates/${Date.now()}_${imageFile.name}`);
-        const snapshot = await uploadBytes(storageRef, imageFile);
-        imageUrl = await getDownloadURL(snapshot.ref);
-        console.log('Image uploaded:', imageUrl);
-      }
-
-      const candidateId = trimmedName.toLowerCase().replace(/\s+/g, '-');
-      console.log('Setting document:', candidateId);
+      const candidateId = editingCandidateId || trimmedName.toLowerCase().replace(/\s+/g, '-');
       
       await setDoc(doc(db, 'candidates', candidateId), {
         name: trimmedName,
@@ -283,8 +462,8 @@ export default function AdminSeed() {
         role: role.trim(),
         bio: bio.trim(),
         manifesto: manifesto.trim(),
-        imageUrl,
-        voteCount: 0
+        imageUrl: uploadedImageUrl || '',
+        voteCount: editingCandidateId ? candidates.find(c => c.id === editingCandidateId)?.voteCount || 0 : 0
       });
 
       // Reset form
@@ -293,21 +472,57 @@ export default function AdminSeed() {
       setManifesto('');
       setImageFile(null);
       setImagePreview(null);
-      setSuccessMessage('Candidate added successfully!');
+      setUploadedImageUrl(null);
+      setEditingCandidateId(null);
+      setSuccessMessage(editingCandidateId ? 'Candidate updated successfully!' : 'Candidate added successfully!');
       
       // Re-focus name input for next entry
       setTimeout(() => nameInputRef.current?.focus(), 100);
     } catch (err: any) {
-      notifyError(err, 'add candidate', 'candidates');
+      notifyError(err, editingCandidateId ? 'update candidate' : 'add candidate', 'candidates');
     } finally {
       setUploading(false);
     }
   };
 
+  const handleEditCandidate = (candidate: any) => {
+    setEditingCandidateId(candidate.id);
+    setName(candidate.name);
+    setFaculty(candidate.faculty);
+    setRole(candidate.role);
+    setBio(candidate.bio || '');
+    setManifesto(candidate.manifesto || '');
+    setImagePreview(candidate.imageUrl || null);
+    setUploadedImageUrl(candidate.imageUrl || null);
+    setActiveTab('candidates');
+  };
+
+  const handleSimulateVote = (candidate: any) => {
+    setConfirmModal({
+      title: 'Simulate Vote',
+      message: `Are you sure you want to simulate a vote for ${candidate.name}? This will increment their vote count by 1 in the database.`,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setLoading(true);
+        try {
+          const candRef = doc(db, 'candidates', candidate.id);
+          await setDoc(candRef, { 
+            voteCount: (candidate.voteCount || 0) + 1 
+          }, { merge: true });
+          setSuccessMessage(`Simulated vote for ${candidate.name} cast successfully!`);
+        } catch (err: any) {
+          notifyError(err, 'simulate vote', `candidates/${candidate.id}`);
+        } finally {
+          setLoading(false);
+        }
+      }
+    });
+  };
+
   const handleAddVoter = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!voterAdm.trim() || !voterEmail.trim()) {
-      alert('Admission Number and Email are required');
+      setErrorMessage('Admission Number and Email are required');
       return;
     }
     setUploading(true);
@@ -337,18 +552,25 @@ export default function AdminSeed() {
   };
 
   const handleDeleteVoter = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this voter?')) return;
-    try {
-      await deleteDoc(doc(db, 'voters', id));
-      setSuccessMessage('Voter deleted successfully!');
-      if (editingVoterId === id) {
-        setEditingVoterId(null);
-        setVoterAdm('');
-        setVoterEmail('');
+    setConfirmModal({
+      title: 'Delete Voter',
+      message: 'Are you sure you want to delete this voter? This action cannot be undone.',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'voters', id));
+          setSuccessMessage('Voter deleted successfully!');
+          if (editingVoterId === id) {
+            setEditingVoterId(null);
+            setVoterAdm('');
+            setVoterEmail('');
+          }
+        } catch (err) {
+          notifyError(err, 'delete voter', `voters/${id}`);
+        }
+        setConfirmModal(null);
       }
-    } catch (err) {
-      notifyError(err, 'delete voter', `voters/${id}`);
-    }
+    });
   };
 
   const handleEditVoter = (voter: any) => {
@@ -371,7 +593,6 @@ export default function AdminSeed() {
         data = Array.isArray(parsed) ? parsed : [parsed];
       } catch (e) {
         // If JSON fails, parse as simple list
-        console.log('JSON parse failed, trying simple list format...');
         const lines = bulkData.split('\n').filter(l => l.trim());
         data = lines.map(line => {
           const parts = line.split(',').map(s => s.trim());
@@ -379,8 +600,14 @@ export default function AdminSeed() {
             const [adm, email, faculty] = parts;
             return { admissionNumber: adm, email, faculty: faculty || 'Engineering' };
           } else {
-            const [name, faculty, role] = parts;
-            return { name, faculty: faculty || 'Engineering', role: role || 'Chairperson' };
+            const [name, faculty, role, bio, manifesto] = parts;
+            return { 
+              name, 
+              faculty: faculty || 'Engineering', 
+              role: role || 'Chairperson',
+              bio: bio || '',
+              manifesto: manifesto || ''
+            };
           }
         });
       }
@@ -406,15 +633,16 @@ export default function AdminSeed() {
       } else {
         for (const item of data) {
           if (!item.name) continue;
-          if (item.role && !VALID_ROLES.includes(item.role)) {
-            throw new Error(`Invalid role "${item.role}" for candidate ${item.name}`);
+          const roleToUse = item.role || 'Chairperson';
+          if (!VALID_ROLES.includes(roleToUse)) {
+            throw new Error(`Invalid role "${roleToUse}" for candidate ${item.name}. Valid roles: ${VALID_ROLES.join(', ')}`);
           }
           const id = item.name.toLowerCase().replace(/\s+/g, '-');
           const ref = doc(db, 'candidates', id);
           batch.set(ref, {
             name: item.name,
             faculty: item.faculty || 'Engineering',
-            role: item.role || 'Chairperson',
+            role: roleToUse,
             bio: item.bio || '',
             manifesto: item.manifesto || '',
             imageUrl: item.imageUrl || '',
@@ -434,6 +662,178 @@ export default function AdminSeed() {
     }
   };
 
+  const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws);
+        
+        // Normalize keys to camelCase for better matching
+        const normalizedData = data.map((row: any) => {
+          const newRow: any = {};
+          Object.keys(row).forEach(key => {
+            const normalizedKey = key.toLowerCase().replace(/\s+/g, '');
+            // Map common variations to our expected keys
+            if (normalizedKey === 'name' || normalizedKey === 'candidatename') newRow.name = row[key];
+            else if (normalizedKey === 'faculty' || normalizedKey === 'department') newRow.faculty = row[key];
+            else if (normalizedKey === 'role' || normalizedKey === 'position') newRow.role = row[key];
+            else if (normalizedKey === 'bio' || normalizedKey === 'biography') newRow.bio = row[key];
+            else if (normalizedKey === 'manifesto') newRow.manifesto = row[key];
+            else if (normalizedKey === 'admissionnumber' || normalizedKey === 'admno') newRow.admissionNumber = row[key];
+            else if (normalizedKey === 'email' || normalizedKey === 'studentemail') newRow.email = row[key];
+            else newRow[key] = row[key];
+          });
+          return newRow;
+        });
+
+        setBulkData(JSON.stringify(normalizedData, null, 2));
+        setSuccessMessage('Excel file parsed successfully. Review the data below and click "Run Bulk Import".');
+      } catch (err) {
+        setErrorMessage('Failed to parse Excel file. Please ensure it is a valid .xlsx or .csv file.');
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const handleResetElection = async () => {
+    setConfirmModal({
+      title: 'Reset Election Data',
+      message: 'This will PERMANENTLY DELETE all cast votes and reset all candidates\' vote counts to zero. Voters will be able to vote again. Are you sure?',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setUploading(true);
+        try {
+          // 1. Delete all documents in 'votes' collection
+          const votesSnap = await getDocs(collection(db, 'votes'));
+          const voteBatches: any[] = [];
+          let currentBatch = writeBatch(db);
+          let count = 0;
+
+          for (const voteDoc of votesSnap.docs) {
+            currentBatch.delete(voteDoc.ref);
+            count++;
+            if (count === 500) {
+              voteBatches.push(currentBatch.commit());
+              currentBatch = writeBatch(db);
+              count = 0;
+            }
+          }
+          if (count > 0) voteBatches.push(currentBatch.commit());
+          await Promise.all(voteBatches);
+
+          // 2. Reset all candidates' voteCount to 0
+          const candidatesSnap = await getDocs(collection(db, 'candidates'));
+          const candidateBatch = writeBatch(db);
+          candidatesSnap.docs.forEach(cDoc => {
+            candidateBatch.update(cDoc.ref, { voteCount: 0 });
+          });
+          await candidateBatch.commit();
+
+          // 3. Reset all voters' hasVoted status to false
+          const votersSnap = await getDocs(collection(db, 'voters'));
+          const voterBatches: any[] = [];
+          let vBatch = writeBatch(db);
+          let vCount = 0;
+
+          for (const vDoc of votersSnap.docs) {
+            vBatch.update(vDoc.ref, { hasVoted: false });
+            vCount++;
+            if (vCount === 500) {
+              voterBatches.push(vBatch.commit());
+              vBatch = writeBatch(db);
+              vCount = 0;
+            }
+          }
+          if (vCount > 0) voterBatches.push(vBatch.commit());
+          await Promise.all(voterBatches);
+
+          setSuccessMessage('Election has been successfully reset! All votes cleared.');
+        } catch (err: any) {
+          notifyError(err, 'reset election', 'votes');
+        } finally {
+          setUploading(false);
+        }
+      }
+    });
+  };
+
+  const handleWipeVoters = async () => {
+    setConfirmModal({
+      title: 'Wipe All Voters',
+      message: 'CRITICAL: This will PERMANENTLY DELETE ALL registered voters from the portal. This cannot be undone. Are you absolutely sure?',
+      danger: true,
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setUploading(true);
+        try {
+          const votersSnap = await getDocs(collection(db, 'voters'));
+          const batches: any[] = [];
+          let currentBatch = writeBatch(db);
+          let count = 0;
+
+          for (const vDoc of votersSnap.docs) {
+            currentBatch.delete(vDoc.ref);
+            count++;
+            if (count === 500) {
+              batches.push(currentBatch.commit());
+              currentBatch = writeBatch(db);
+              count = 0;
+            }
+          }
+          if (count > 0) batches.push(currentBatch.commit());
+          await Promise.all(batches);
+          setSuccessMessage('All voters have been deleted.');
+        } catch (err: any) {
+          notifyError(err, 'wipe voters', 'voters');
+        } finally {
+          setUploading(false);
+        }
+      }
+    });
+  };
+
+  const handleExportHistory = async () => {
+    setUploading(true);
+    try {
+      // Fetch all data for the snapshot
+      const votesSnap = await getDocs(collection(db, 'votes'));
+      const candidatesSnap = await getDocs(collection(db, 'candidates'));
+      const configSnap = await getDocs(collection(db, 'config'));
+      
+      const electionConfig = configSnap.docs.find(d => d.id === 'config')?.data() || {};
+      const results = candidatesSnap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      }));
+      
+      const historyData = {
+        electionName: electionConfig.electionName || 'Unnamed Election',
+        openingTime: electionConfig.openingTime || '',
+        closingTime: electionConfig.closingTime || '',
+        exportedAt: serverTimestamp(),
+        totalVotes: votesSnap.size,
+        results: results,
+        // We don't store individual votes to save space/privacy, 
+        // but we store the final tallies and config.
+      };
+
+      await addDoc(collection(db, 'voting_history'), historyData);
+      setSuccessMessage('Election results exported to history successfully!');
+    } catch (err: any) {
+      notifyError(err, 'export history', 'voting_history');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const [bulkMode, setBulkMode] = useState<'candidates' | 'voters'>('candidates');
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -445,13 +845,20 @@ export default function AdminSeed() {
   };
 
   const handleDeleteCandidate = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this candidate?')) return;
-    try {
-      await deleteDoc(doc(db, 'candidates', id));
-      setSuccessMessage('Candidate deleted successfully!');
-    } catch (err) {
-      notifyError(err, 'delete candidate', `candidates/${id}`);
-    }
+    setConfirmModal({
+      title: 'Delete Candidate',
+      message: 'Are you sure you want to delete this candidate? This action cannot be undone.',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'candidates', id));
+          setSuccessMessage('Candidate deleted successfully!');
+        } catch (err) {
+          notifyError(err, 'delete candidate', `candidates/${id}`);
+        }
+        setConfirmModal(null);
+      }
+    });
   };
 
   const seedDemoData = async () => {
@@ -493,7 +900,7 @@ export default function AdminSeed() {
         });
       }
 
-      alert('Election config, sample voters, and candidates seeded!');
+      setSuccessMessage('Election config, sample voters, and candidates seeded!');
     } catch (err) {
       notifyError(err, 'seed demo data', 'seed_data');
     } finally {
@@ -563,6 +970,12 @@ export default function AdminSeed() {
                   active={activeTab === 'control'} 
                   onClick={() => setActiveTab('control')} 
                 />
+                <SidebarItem 
+                  icon={<History size={18} />} 
+                  label="Voting History" 
+                  active={activeTab === 'history'} 
+                  onClick={() => setActiveTab('history')} 
+                />
               </nav>
 
               <div className="pt-6 border-t border-zinc-800">
@@ -581,10 +994,10 @@ export default function AdminSeed() {
               <div className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/30">
                 <div>
                   <h3 className="text-xl font-black uppercase tracking-tighter text-white">
-                    {activeTab === 'candidates' ? 'Candidate Management' : activeTab === 'voters' ? 'Voter Management' : activeTab === 'bulk' ? 'Bulk Data Import' : 'Election Control Center'}
+                    {activeTab === 'candidates' ? 'Candidate Management' : activeTab === 'voters' ? 'Voter Management' : activeTab === 'bulk' ? 'Bulk Data Import' : activeTab === 'history' ? 'Voting History' : 'Election Control Center'}
                   </h3>
                   <p className="text-[10px] text-zinc-500 font-black uppercase tracking-[0.2em] mt-1">
-                    {activeTab === 'candidates' ? 'Register and manage election candidates' : activeTab === 'voters' ? 'Manage eligible student voters' : activeTab === 'bulk' ? 'Import large datasets via JSON or CSV' : 'Configure election timing, status, and branding'}
+                    {activeTab === 'candidates' ? 'Register and manage election candidates' : activeTab === 'voters' ? 'Manage eligible student voters' : activeTab === 'bulk' ? 'Import large datasets via JSON or CSV' : activeTab === 'history' ? 'Review past election results and archives' : 'Configure election timing, status, and branding'}
                   </p>
                 </div>
                 
@@ -616,7 +1029,9 @@ export default function AdminSeed() {
                 {activeTab === 'candidates' ? (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
                     <div className="space-y-6">
-                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500">Add New Candidate</h4>
+                      <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-amber-500">
+                        {editingCandidateId ? 'Edit Candidate Details' : 'Add New Candidate'}
+                      </h4>
                       <form onSubmit={handleAddCandidate} className="space-y-4">
                         <div className="space-y-2">
                           <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest flex items-center gap-1">
@@ -677,43 +1092,85 @@ export default function AdminSeed() {
                           <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest flex items-center gap-1">
                             Candidate Image <span className="text-amber-500">*</span>
                           </label>
-                          <div className="flex items-center gap-6 p-6 bg-zinc-950 border border-dashed border-zinc-800 rounded-2xl">
-                            <div className="w-24 h-24 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center overflow-hidden relative group/preview shrink-0 shadow-inner">
+                          <div 
+                            onDragOver={handleDragOver}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop}
+                            className={cn(
+                              "flex items-center gap-6 p-6 bg-zinc-950 border border-dashed rounded-2xl transition-all",
+                              isDragging ? "border-amber-500 bg-amber-500/5 scale-[1.02]" : "border-zinc-800"
+                            )}
+                          >
+                            <div className="w-24 h-24 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
                               {imagePreview ? (
-                                <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
+                                <>
+                                  <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
+                                  <button 
+                                    type="button" 
+                                    onClick={() => { setImageFile(null); setImagePreview(null); setUploadedImageUrl(null); }}
+                                    className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full hover:bg-red-600 transition-colors shadow-lg z-10"
+                                    title="Remove Image"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </>
                               ) : (
                                 <div className="flex flex-col items-center gap-1">
                                   <User size={32} className="text-zinc-800" />
                                 </div>
                               )}
-                              {imageFile && (
-                                <button 
-                                  type="button" 
-                                  onClick={() => { setImageFile(null); setImagePreview(null); }}
-                                  className="absolute inset-0 bg-red-500/90 flex items-center justify-center opacity-0 group-hover/preview:opacity-100 transition-opacity text-white"
-                                >
-                                  <X size={20} />
-                                </button>
-                              )}
                             </div>
                             
-                            <label className="flex-1 flex items-center justify-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group">
-                              <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
-                              <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
-                              <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
-                                {imageFile ? 'Change Image' : 'Upload Profile Image'}
-                              </span>
+                            <label className="flex-1 flex flex-col gap-2">
+                              <div className="flex items-center justify-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group relative overflow-hidden">
+                                <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
+                                <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
+                                <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
+                                  {compressing ? 'Optimizing...' : imageFile ? 'Change Image' : 'Upload Profile Image'}
+                                </span>
+                                {uploadProgress !== null && activeTab === 'candidates' && (
+                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                                )}
+                              </div>
+                              {compressing && (
+                                <p className="text-[8px] font-black text-blue-500 uppercase tracking-widest text-center flex items-center justify-center gap-1">
+                                  <Zap size={8} className="animate-pulse" /> Shrinking file for speed...
+                                </p>
+                              )}
+                              {uploadProgress !== null && activeTab === 'candidates' && (
+                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">Uploading: {Math.round(uploadProgress)}%</p>
+                              )}
                             </label>
                           </div>
                         </div>
 
-                        <button 
-                          type="submit"
-                          disabled={uploading}
-                          className="w-full bg-amber-500 text-zinc-950 font-black py-4 rounded-xl hover:bg-amber-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-amber-500/10"
-                        >
-                          {uploading ? <Loader2 className="animate-spin" /> : <><Plus size={18} /> Add Candidate</>}
-                        </button>
+                        <div className="flex gap-2">
+                          <button 
+                            type="submit"
+                            disabled={uploading}
+                            className="flex-1 bg-amber-500 text-zinc-950 font-black py-4 rounded-xl hover:bg-amber-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-lg shadow-amber-500/10"
+                          >
+                            {uploading ? <Loader2 className="animate-spin" /> : (
+                              editingCandidateId ? <><CheckCircle2 size={18} /> Update Candidate</> : <><Plus size={18} /> Add Candidate</>
+                            )}
+                          </button>
+                          {editingCandidateId && (
+                            <button 
+                              type="button"
+                              onClick={() => {
+                                setEditingCandidateId(null);
+                                setName('');
+                                setBio('');
+                                setManifesto('');
+                                setImageFile(null);
+                                setImagePreview(null);
+                              }}
+                              className="px-6 bg-zinc-800 text-white font-black py-4 rounded-xl hover:bg-zinc-700 transition-all"
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </div>
                       </form>
                     </div>
 
@@ -735,12 +1192,29 @@ export default function AdminSeed() {
                                 <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">{c.role} • {c.faculty}</p>
                               </div>
                             </div>
-                            <button 
-                              onClick={() => handleDeleteCandidate(c.id)}
-                              className="p-2 text-zinc-700 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-                            >
-                              <Trash2 size={18} />
-                            </button>
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                              <button 
+                                onClick={() => handleSimulateVote(c)}
+                                className="p-2 text-zinc-700 hover:text-green-500 hover:bg-green-500/10 rounded-lg transition-all"
+                                title="Simulate Vote"
+                              >
+                                <Vote size={18} />
+                              </button>
+                              <button 
+                                onClick={() => handleEditCandidate(c)}
+                                className="p-2 text-zinc-700 hover:text-amber-500 hover:bg-amber-500/10 rounded-lg transition-all"
+                                title="Edit Candidate"
+                              >
+                                <Pencil size={18} />
+                              </button>
+                              <button 
+                                onClick={() => handleDeleteCandidate(c.id)}
+                                className="p-2 text-zinc-700 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
+                                title="Delete Candidate"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            </div>
                           </div>
                         ))}
                         {candidates.length === 0 && (
@@ -825,7 +1299,10 @@ export default function AdminSeed() {
                         {voters.map(v => (
                           <div key={v.id} className="bg-zinc-950/50 border border-zinc-800 p-4 rounded-2xl flex items-center justify-between group hover:border-zinc-700 transition-all">
                             <div className="flex items-center gap-4">
-                              <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500">
+                              <div className={cn(
+                                "w-10 h-10 rounded-xl flex items-center justify-center transition-colors",
+                                v.hasVoted ? "bg-green-500/10 text-green-500" : "bg-zinc-800 text-zinc-500"
+                              )}>
                                 <User size={20} />
                               </div>
                               <div>
@@ -833,8 +1310,14 @@ export default function AdminSeed() {
                                 <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">
                                   {v.email} • {v.faculty}
                                 </p>
-                                {v.hasVoted && (
-                                  <span className="text-[8px] font-black text-green-500 uppercase tracking-widest bg-green-500/10 px-2 py-0.5 rounded-full">Voted</span>
+                                {v.hasVoted ? (
+                                  <span className="inline-flex items-center gap-1 text-[8px] font-black text-green-500 uppercase tracking-widest bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20">
+                                    <CheckCircle2 size={8} /> Voted
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[8px] font-black text-zinc-500 uppercase tracking-widest bg-zinc-500/10 px-2 py-0.5 rounded-full border border-zinc-800">
+                                    <Clock size={8} /> Pending
+                                  </span>
                                 )}
                               </div>
                             </div>
@@ -886,7 +1369,19 @@ export default function AdminSeed() {
                     </div>
 
                     <div className="bg-zinc-950 p-6 rounded-3xl border border-zinc-800 space-y-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-1">
+                          <h5 className="text-sm font-bold text-white">Import Data</h5>
+                          <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Upload Excel/CSV or paste text</p>
+                        </div>
+                        <label className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-xl cursor-pointer hover:border-amber-500 transition-all group">
+                          <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelUpload} className="hidden" />
+                          <FileSpreadsheet size={16} className="text-zinc-500 group-hover:text-amber-500" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 group-hover:text-zinc-300">Upload Excel</span>
+                        </label>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="space-y-3">
                           <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Format: CSV / Simple List</p>
                           <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800/50">
@@ -901,6 +1396,14 @@ export default function AdminSeed() {
                             {bulkMode === 'voters'
                               ? `[ { "admissionNumber": "...", "email": "...", "faculty": "..." } ]`
                               : `[ { "name": "...", "faculty": "...", "role": "..." } ]`}
+                          </pre>
+                        </div>
+                        <div className="space-y-3">
+                          <p className="text-[10px] font-black text-green-500 uppercase tracking-widest">Excel Headers</p>
+                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800/50">
+                            {bulkMode === 'voters'
+                              ? `admissionNumber, email, faculty`
+                              : `name, faculty, role, bio, manifesto`}
                           </pre>
                         </div>
                       </div>
@@ -919,6 +1422,76 @@ export default function AdminSeed() {
                       >
                         {uploading ? <Loader2 className="animate-spin" /> : <><FileJson size={18} /> Run Bulk Import</>}
                       </button>
+                    </div>
+                  </div>
+                ) : activeTab === 'history' ? (
+                  <div className="space-y-8">
+                    <div className="grid grid-cols-1 gap-6">
+                      {history.map((item) => (
+                        <div key={item.id} className="bg-zinc-950/50 border border-zinc-800 rounded-3xl p-8 space-y-6">
+                          <div className="flex justify-between items-start">
+                            <div className="flex items-center gap-4">
+                              <div className="w-12 h-12 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500">
+                                <History size={24} />
+                              </div>
+                              <div>
+                                <h4 className="text-xl font-black text-white uppercase tracking-tight">{item.electionName}</h4>
+                                <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">
+                                  Archived on {item.exportedAt?.toDate().toLocaleString()} • {item.totalVotes} Total Votes
+                                </p>
+                              </div>
+                            </div>
+                            <button 
+                              onClick={async () => {
+                                setConfirmModal({
+                                  title: 'Delete History Record',
+                                  message: 'Are you sure you want to delete this archived election record? This cannot be undone.',
+                                  danger: true,
+                                  onConfirm: async () => {
+                                    try {
+                                      await deleteDoc(doc(db, 'voting_history', item.id));
+                                      setSuccessMessage('History record deleted.');
+                                    } catch (err) {
+                                      notifyError(err, 'delete history', `voting_history/${item.id}`);
+                                    }
+                                    setConfirmModal(null);
+                                  }
+                                });
+                              }}
+                              className="p-2 text-zinc-700 hover:text-red-500 transition-colors"
+                            >
+                              <Trash2 size={20} />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {item.results?.map((cand: any) => (
+                              <div key={cand.id} className="bg-zinc-900/50 border border-zinc-800 p-4 rounded-2xl flex items-center gap-4">
+                                {cand.imageUrl ? (
+                                  <img src={cand.imageUrl} alt={cand.name} className="w-10 h-10 rounded-xl object-cover border border-zinc-800" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500">
+                                    <User size={18} />
+                                  </div>
+                                )}
+                                <div>
+                                  <p className="text-sm font-bold text-white">{cand.name}</p>
+                                  <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">{cand.voteCount} Votes</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      {history.length === 0 && (
+                        <div className="text-center py-24 border border-dashed border-zinc-800 rounded-[3rem]">
+                          <div className="w-16 h-16 bg-zinc-900 rounded-3xl flex items-center justify-center text-zinc-700 mx-auto mb-6">
+                            <History size={32} />
+                          </div>
+                          <p className="text-sm text-zinc-500 font-bold uppercase tracking-widest">No archived elections found</p>
+                          <p className="text-xs text-zinc-600 mt-2">Export current results from the Control tab to see them here.</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -1041,30 +1614,47 @@ export default function AdminSeed() {
 
                         <div className="space-y-2">
                           <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Election Banner / Logo</label>
-                          <div className="flex items-center gap-6 p-6 bg-zinc-900 border border-dashed border-zinc-800 rounded-2xl">
-                            <div className="w-32 h-20 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-center overflow-hidden relative group/banner shrink-0 shadow-inner">
+                          <div 
+                            onDragOver={handleBannerDragOver}
+                            onDragLeave={handleBannerDragLeave}
+                            onDrop={handleBannerDrop}
+                            className={cn(
+                              "flex items-center gap-6 p-6 bg-zinc-900 border border-dashed rounded-2xl transition-all",
+                              isDraggingBanner ? "border-amber-500 bg-amber-500/5 scale-[1.02]" : "border-zinc-800"
+                            )}
+                          >
+                            <div className="w-32 h-20 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
                               {bannerPreview || bannerUrl ? (
-                                <img src={bannerPreview || bannerUrl} alt="Banner" className="w-full h-full object-cover" />
+                                <>
+                                  <img src={bannerPreview || bannerUrl} alt="Banner" className="w-full h-full object-cover" />
+                                  <button 
+                                    type="button" 
+                                    onClick={handleRemoveBanner}
+                                    className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full hover:bg-red-600 transition-colors shadow-lg z-10"
+                                    title="Remove Banner"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </>
                               ) : (
                                 <ImageIcon size={32} className="text-zinc-800" />
                               )}
-                              {(bannerFile || bannerUrl) && (
-                                <button 
-                                  type="button" 
-                                  onClick={handleRemoveBanner}
-                                  className="absolute inset-0 bg-red-500/90 flex items-center justify-center opacity-0 group-hover/banner:opacity-100 transition-opacity text-white"
-                                >
-                                  <X size={20} />
-                                </button>
-                              )}
                             </div>
                             
-                            <label className="flex-1 flex items-center justify-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group">
-                              <input type="file" accept="image/*" onChange={handleBannerChange} className="hidden" />
-                              <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
-                              <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
-                                {bannerFile ? 'Change Banner' : 'Upload Banner'}
-                              </span>
+                            <label className="flex-1 flex flex-col gap-2">
+                              <div className="flex items-center justify-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group relative overflow-hidden">
+                                <input type="file" accept="image/*" onChange={handleBannerChange} className="hidden" />
+                                <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
+                                <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
+                                  {bannerFile ? 'Change Banner' : 'Upload Banner'}
+                                </span>
+                                {uploadProgress !== null && activeTab === 'control' && (
+                                  <div className="absolute bottom-0 left-0 h-1 bg-amber-500 transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                                )}
+                              </div>
+                              {uploadProgress !== null && activeTab === 'control' && (
+                                <p className="text-[8px] font-black text-amber-500 uppercase tracking-widest text-center">Uploading: {Math.round(uploadProgress)}%</p>
+                              )}
                             </label>
                           </div>
                         </div>
@@ -1077,6 +1667,60 @@ export default function AdminSeed() {
                           {uploading ? <Loader2 className="animate-spin" /> : <><CheckCircle2 size={18} /> Save Election Configuration</>}
                         </button>
                       </form>
+
+                      <div className="pt-8 border-t border-zinc-900 space-y-4">
+                        <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6">
+                          <div className="flex items-center gap-4 mb-4">
+                            <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500">
+                              <History size={20} />
+                            </div>
+                            <div>
+                              <h5 className="text-sm font-bold text-white">Election Archival</h5>
+                              <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Save current results to history</p>
+                            </div>
+                          </div>
+                          <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                            Before resetting or wiping data, you can export the current election results and configuration to the voting history for future reference.
+                          </p>
+                          <button 
+                            onClick={handleExportHistory}
+                            disabled={uploading}
+                            className="w-full bg-zinc-900 border border-blue-500/30 text-blue-500 font-black py-4 rounded-xl hover:bg-blue-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            {uploading ? <Loader2 className="animate-spin" /> : <><Download size={18} /> Export to Voting History</>}
+                          </button>
+                        </div>
+
+                        <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-6">
+                          <div className="flex items-center gap-4 mb-4">
+                            <div className="w-10 h-10 bg-red-500/10 rounded-xl flex items-center justify-center text-red-500">
+                              <RotateCcw size={20} />
+                            </div>
+                            <div>
+                              <h5 className="text-sm font-bold text-white">Danger Zone</h5>
+                              <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Resetting will clear all current data</p>
+                            </div>
+                          </div>
+                          <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                            Clearing the election will permanently delete all cast votes, reset candidate tallies to zero, and allow all voters to vote again. This action is irreversible.
+                          </p>
+                          <button 
+                            onClick={handleResetElection}
+                            disabled={uploading}
+                            className="w-full bg-zinc-900 border border-red-500/30 text-red-500 font-black py-4 rounded-xl hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            {uploading ? <Loader2 className="animate-spin" /> : <><RotateCcw size={18} /> Reset & Clear Election Data</>}
+                          </button>
+
+                          <button 
+                            onClick={handleWipeVoters}
+                            disabled={uploading}
+                            className="w-full bg-zinc-900 border border-red-500/10 text-red-400/50 text-[10px] font-black py-3 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            {uploading ? <Loader2 className="animate-spin" size={12} /> : <><Trash2 size={12} /> Wipe All Registered Voters</>}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1085,6 +1729,54 @@ export default function AdminSeed() {
           </div>
         </div>
       )}
+
+      {/* Confirm Modal */}
+      <AnimatePresence>
+        {confirmModal && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-zinc-950/90 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-[2rem] p-8 shadow-2xl space-y-6"
+            >
+              <div className="flex items-center gap-4">
+                <div className={cn(
+                  "w-12 h-12 rounded-2xl flex items-center justify-center",
+                  confirmModal.danger ? "bg-red-500/10 text-red-500" : "bg-amber-500/10 text-amber-500"
+                )}>
+                  {confirmModal.danger ? <Trash2 size={24} /> : <Info size={24} />}
+                </div>
+                <h4 className="text-xl font-black text-white">{confirmModal.title}</h4>
+              </div>
+              
+              <p className="text-sm text-zinc-400 leading-relaxed">
+                {confirmModal.message}
+              </p>
+
+              <div className="flex gap-3 pt-2">
+                <button 
+                  onClick={() => setConfirmModal(null)}
+                  className="flex-1 px-6 py-4 rounded-xl bg-zinc-800 text-zinc-300 font-bold hover:bg-zinc-700 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={confirmModal.onConfirm}
+                  className={cn(
+                    "flex-1 px-6 py-4 rounded-xl font-black transition-all shadow-lg",
+                    confirmModal.danger 
+                      ? "bg-red-500 text-white hover:bg-red-400 shadow-red-500/20" 
+                      : "bg-amber-500 text-zinc-950 hover:bg-amber-400 shadow-amber-500/20"
+                  )}
+                >
+                  Confirm
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </>
   );
 }
