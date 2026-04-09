@@ -50,8 +50,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
 }
 
 import { 

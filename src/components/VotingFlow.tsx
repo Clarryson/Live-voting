@@ -50,8 +50,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
 }
 
 import { motion, AnimatePresence } from 'motion/react';
@@ -85,27 +84,43 @@ export default function VotingFlow({ config }: { config: any }) {
   // Sync offline votes on mount or when online
   useEffect(() => {
     if (!isOffline) {
-      const offlineVote = localStorage.getItem('pending_vote');
-      if (offlineVote) {
-        const voteData = JSON.parse(offlineVote);
-        syncVote(voteData);
+      const offlineVotesStr = localStorage.getItem('pending_votes');
+      if (offlineVotesStr) {
+        let votes = [];
+        try {
+          votes = JSON.parse(offlineVotesStr);
+        } catch(e) {}
+        if (Array.isArray(votes) && votes.length > 0) {
+          syncOfflineQueue(votes);
+        }
       }
     }
   }, [isOffline]);
 
-  const syncVote = async (voteData: any) => {
-    try {
-      const res = await fetch('/api/cast-vote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(voteData),
-      });
-      if (res.ok) {
-        localStorage.removeItem('pending_vote');
-        setStep('success');
+  const syncOfflineQueue = async (votes: any[]) => {
+    let unSynced = [];
+    for (const voteData of votes) {
+      try {
+        const res = await fetch('/api/cast-vote', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(voteData),
+        });
+        if (!res.ok) throw new Error('Sync failed');
+      } catch (err) {
+        console.error('Failed to sync offline vote:', err);
+        unSynced.push(voteData);
       }
-    } catch (err) {
-      console.error('Failed to sync offline vote:', err);
+    }
+    
+    if (unSynced.length === 0) {
+      localStorage.removeItem('pending_votes');
+    } else {
+      localStorage.setItem('pending_votes', JSON.stringify(unSynced));
+    }
+    
+    if (votes.length > 0 && unSynced.length < votes.length) {
+      setStep('success');
     }
   };
 
@@ -158,7 +173,13 @@ export default function VotingFlow({ config }: { config: any }) {
     const voteData = { admissionNumber, candidateId: selectedCandidate };
     
     if (isOffline) {
-      localStorage.setItem('pending_vote', JSON.stringify(voteData));
+      const existing = localStorage.getItem('pending_votes');
+      let queue = [];
+      if (existing) {
+        try { queue = JSON.parse(existing); } catch(e) {}
+      }
+      queue.push(voteData);
+      localStorage.setItem('pending_votes', JSON.stringify(queue));
       setStep('success');
       return;
     }

@@ -49,8 +49,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
 }
 
 import Dashboard from './components/Dashboard';
@@ -69,6 +68,19 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [isAdminPath, setIsAdminPath] = useState(false);
+  const [devPassword, setDevPassword] = useState('');
+  const [devLoginError, setDevLoginError] = useState<string | null>(null);
+  const [devLoginLoading, setDevLoginLoading] = useState(false);
+  const [isDevAdmin, setIsDevAdmin] = useState<boolean>(() => {
+    // Restore dev admin session on page reload
+    try {
+      const raw = sessionStorage.getItem('dev_admin_token');
+      if (!raw) return false;
+      const [payloadB64] = raw.split('.');
+      const { exp } = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
+      return Math.floor(Date.now() / 1000) < exp;
+    } catch { return false; }
+  });
 
   useEffect(() => {
     // Detect admin path
@@ -89,12 +101,20 @@ export default function App() {
       }
       setLoading(false);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'config/config');
+      console.error('Config fetch failed:', error);
+      setLoading(false);
     });
+
+    // Fallback: Force hide loader after 3 seconds if Firebase is hanging
+    const fallbackTimer = setTimeout(() => {
+      setLoading(false);
+    }, 3000);
+
     return () => {
       window.removeEventListener('popstate', checkPath);
       unsubAuth();
       unsubConfig();
+      clearTimeout(fallbackTimer);
     };
   }, []);
 
@@ -115,6 +135,31 @@ export default function App() {
     }
   };
 
+  const attemptDevLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDevLoginLoading(true);
+    setDevLoginError(null);
+    try {
+      const res = await fetch('/api/admin-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: devPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to get admin token');
+      // Verify expiry client-side then store
+      const [payloadB64] = (data.token as string).split('.');
+      const payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
+      if (Math.floor(Date.now() / 1000) >= payload.exp) throw new Error('Token already expired');
+      sessionStorage.setItem('dev_admin_token', data.token);
+      setIsDevAdmin(true);
+    } catch (err: any) {
+      setDevLoginError(err.message);
+    } finally {
+      setDevLoginLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
@@ -123,7 +168,13 @@ export default function App() {
     );
   }
 
-  const isAdmin = user && ADMIN_EMAILS.includes(user.email || '');
+  // Admin = Google email match OR valid dev override token in sessionStorage
+  const isAdmin = isDevAdmin || (user && ADMIN_EMAILS.includes(user.email || ''));
+
+  const handleDevLogout = () => {
+    sessionStorage.removeItem('dev_admin_token');
+    setIsDevAdmin(false);
+  };
 
   // If on admin path but not logged in as admin, show login screen
   if (isAdminPath && !isAdmin) {
@@ -145,6 +196,27 @@ export default function App() {
             <LogIn size={20} />
             <span>Login with Google</span>
           </button>
+
+          <div className="pt-6 border-t border-zinc-800">
+            <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest mb-4">Or use Developer Override</p>
+            <form onSubmit={attemptDevLogin} className="flex gap-2">
+              <input 
+                type="password" 
+                placeholder="Master Password" 
+                value={devPassword}
+                onChange={(e) => setDevPassword(e.target.value)}
+                disabled={devLoginLoading}
+                className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 transition-colors disabled:opacity-50"
+              />
+              <button type="submit" disabled={devLoginLoading} className="px-6 bg-zinc-800 text-white rounded-xl font-bold hover:bg-zinc-700 transition-colors disabled:opacity-50 flex items-center gap-2">
+                {devLoginLoading ? <Loader2 size={16} className="animate-spin" /> : null}
+                {devLoginLoading ? 'Signing in...' : 'Override'}
+              </button>
+            </form>
+            {devLoginError && (
+              <p className="mt-3 text-xs text-red-400 font-medium">{devLoginError}</p>
+            )}
+          </div>
           
           <button 
             onClick={() => {
@@ -216,10 +288,10 @@ export default function App() {
                   <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-none">
                     Admin
                   </p>
-                  <p className="text-xs font-bold text-zinc-300">{user.email}</p>
+                  <p className="text-xs font-bold text-zinc-300">{user?.email || 'Developer Override'}</p>
                 </div>
                 <button 
-                  onClick={handleLogout}
+                  onClick={isDevAdmin ? handleDevLogout : handleLogout}
                   className="p-2 text-zinc-500 hover:text-red-500 transition-colors"
                   title="Logout"
                 >

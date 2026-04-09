@@ -8,9 +8,6 @@ import {
   getFirestore, 
   doc, 
   getDoc, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc,
   collection, 
   query, 
   where, 
@@ -19,21 +16,73 @@ import {
   runTransaction,
   increment
 } from 'firebase/firestore';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Initialize Firebase
+// Initialize Firebase Client SDK
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
-
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+
+// Secret for signing dev admin tokens (HMAC-SHA256)
+const DEV_TOKEN_SECRET = process.env.DEV_TOKEN_SECRET || 'dev-override-secret-change-in-prod';
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Custom In-Memory Rate Limiter
+const requestCounts = new Map<string, { count: number; timestamp: number }>();
+const WINDOW_MS = 15 * 60 * 1000;
+const MAX_REQUESTS = 20;
+
+const apiLimiter = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const ip = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+  
+  const record = requestCounts.get(ip);
+  if (!record || now - record.timestamp > WINDOW_MS) {
+    requestCounts.set(ip, { count: 1, timestamp: now });
+    next();
+  } else {
+    if (record.count >= MAX_REQUESTS) {
+      res.status(429).json({ error: 'Too many requests from this IP, please try again after 15 minutes' });
+    } else {
+      record.count += 1;
+      next();
+    }
+  }
+};
+app.use('/api/', apiLimiter);
+
 const PORT = 3000;
+
+// Admin master password (dev override)
+const ADMIN_MASTER_PASSWORD = 'MulembeAdmin2025';
+
+// Dev Admin Token endpoint — mints a signed HMAC token (no Firebase Admin SDK needed)
+app.post('/api/admin-token', (req, res) => {
+  const { password } = req.body;
+  if (!password || password !== ADMIN_MASTER_PASSWORD) {
+    return res.status(401).json({ error: 'Invalid master password' });
+  }
+
+  // Build a simple token: base64(payload).base64(signature)
+  const payload = Buffer.from(JSON.stringify({
+    uid: 'dev-admin-override',
+    isDevAdmin: true,
+    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8, // 8-hour expiry
+  })).toString('base64url');
+
+  const sig = crypto
+    .createHmac('sha256', DEV_TOKEN_SECRET)
+    .update(payload)
+    .digest('base64url');
+
+  res.json({ token: `${payload}.${sig}` });
+});
 
 // API Endpoints for the voting flow
 
@@ -147,25 +196,34 @@ app.post('/api/cast-vote', async (req, res) => {
   }
 });
 
-// Vite middleware for development
-async function startServer() {
+// Start listening immediately so API routes are available
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
+
+// Set up Vite middleware asynchronously (does NOT block API routes)
+async function initVite() {
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+    try {
+      const vite = await createViteServer({
+        server: { 
+          middlewareMode: true,
+          hmr: { server },  // Reuse the existing HTTP server for HMR websocket
+        },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+      console.log('Vite dev middleware ready');
+    } catch (e) {
+      console.error('Vite init failed:', e);
+    }
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
 }
 
-startServer();
+initVite();

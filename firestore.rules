@@ -10,6 +10,7 @@ service cloud.firestore {
       return isAuthenticated() && 
         (
           (request.auth.token.email == "clarrysoncarson003@gmail.com") ||
+          (request.auth.token.isDevAdmin == true) ||
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
         );
     }
@@ -18,20 +19,27 @@ service cloud.firestore {
     // For this app, we'll allow public read of candidates and config, but restricted write.
     match /voters/{voterId} {
       allow read: if true; // Allow backend to check registration
-      allow update: if true; // Allow backend to mark as voted
-      allow create, delete: if isAdmin();
+      // Only allow updating the hasVoted flag from false to true
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hasVoted']) && 
+                       request.resource.data.hasVoted == true &&
+                       resource.data.hasVoted == false;
+      allow write: if isAdmin();
     }
 
     match /candidates/{candidateId} {
       allow read: if true; // Publicly readable for the dashboard
-      allow update: if true; // Allow backend to increment vote count
-      allow create, delete: if isAdmin();
+      // Only allow incrementing the vote count by exactly 1
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['voteCount']) && 
+                       request.resource.data.voteCount == resource.data.voteCount + 1;
+      allow write: if isAdmin();
     }
 
     match /votes/{voteId} {
       allow read: if true; // Publicly readable for the live activity feed
-      allow create: if true; // Allow backend to cast votes
-      allow delete: if isAdmin();
+      // Only allow creating a valid vote with strict structure
+      allow create: if request.resource.data.keys().hasAll(['candidateId', 'faculty', 'timestamp']) &&
+                       request.resource.data.size() == 3;
+      allow write: if isAdmin();
     }
 
     match /config/{configId} {

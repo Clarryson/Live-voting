@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage, auth } from '../lib/firebase';
 import { doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch, getDocs, query, addDoc, serverTimestamp, orderBy } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import * as XLSX from 'xlsx';
 import imageCompression from 'browser-image-compression';
 import { Database, Loader2, Plus, Trash2, Upload, X, UserPlus, User, Users, Image as ImageIcon, FileJson, CheckCircle2, Pencil, Settings, Clock, FileSpreadsheet, RotateCcw, Info, Download, History, Zap, Vote } from 'lucide-react';
@@ -72,8 +72,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
 }
 
 const VALID_ROLES = ['Chairperson', 'Vice Chairperson', 'Sec.General', 'Treasurer', 'P. Coordinator'];
@@ -186,9 +185,15 @@ export default function AdminSeed() {
         // Convert UTC ISO strings from Firestore to local YYYY-MM-DDTHH:mm for datetime-local input
         const formatForInput = (iso: string) => {
           if (!iso) return '';
-          const d = new Date(iso);
-          const offset = d.getTimezoneOffset() * 60000;
-          return new Date(d.getTime() - offset).toISOString().slice(0, 16);
+          try {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return '';
+            const offset = d.getTimezoneOffset() * 60000;
+            return new Date(d.getTime() - offset).toISOString().slice(0, 16);
+          } catch (e) {
+            console.error('Date formatting failed:', e);
+            return '';
+          }
         };
 
         setOpeningTime(formatForInput(data.openingTime));
@@ -238,43 +243,8 @@ export default function AdminSeed() {
     setBannerFile(processedFile);
     setBannerPreview(URL.createObjectURL(processedFile));
     
-    // Instant Upload
-    setUploading(true);
-    setBannerUploadProgress(0);
-    try {
-      const fileName = sanitizeFileName(processedFile.name || 'banner.jpg');
-      const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
-      console.log('Uploading banner to:', storageRef.fullPath);
-      
-      const uploadTask = uploadBytesResumable(storageRef, processedFile);
-      
-      const url = await new Promise<string>((resolve, reject) => {
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setBannerUploadProgress(progress);
-            console.log('Banner upload progress:', Math.round(progress) + '%');
-          }, 
-          (error) => {
-            console.error('Banner upload task error:', error);
-            reject(error);
-          }, 
-          () => {
-            getDownloadURL(uploadTask.snapshot.ref).then(url => {
-              console.log('Banner upload complete. URL:', url);
-              resolve(url);
-            }).catch(reject);
-          }
-        );
-      });
-      setBannerUrl(url);
-      setBannerUploadProgress(null);
-    } catch (err) {
-      console.error('Banner upload catch error:', err);
-      notifyError(err, 'upload banner', 'config/banner');
-    } finally {
-      setUploading(false);
-    }
+    // Upload is deferred to handleSaveSettings
+    setBannerUploadProgress(null);
   };
 
   const handleBannerChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -315,9 +285,32 @@ export default function AdminSeed() {
     e.preventDefault();
     setUploading(true);
     try {
+      let finalBannerUrl = bannerUrl;
+      
+      if (bannerFile) {
+        setBannerUploadProgress(0);
+        const fileName = sanitizeFileName(bannerFile.name || 'banner.jpg');
+        const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
+        
+        const uploadTask = uploadBytesResumable(storageRef, bannerFile);
+        finalBannerUrl = await new Promise<string>((resolve, reject) => {
+          uploadTask.on('state_changed', 
+            (snapshot) => {
+              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+              setBannerUploadProgress(progress);
+            }, 
+            reject, 
+            () => {
+              getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
+            }
+          );
+        });
+        setBannerUploadProgress(null);
+      }
+
       const configData: any = {
         electionName,
-        bannerUrl: bannerUrl,
+        bannerUrl: finalBannerUrl,
         status: electionStatus
       };
 
@@ -363,45 +356,10 @@ export default function AdminSeed() {
     setImageFile(processedFile);
     setImagePreview(URL.createObjectURL(processedFile));
 
-    // Instant Upload
-    setUploading(true);
-    setCandidateUploadProgress(0);
+    // Upload is deferred to handleAddCandidate
+    setUploadedImageUrl(null);
     setCandidateUploadSuccess(false);
-    try {
-      const fileName = sanitizeFileName(processedFile.name || 'candidate.jpg');
-      const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
-      console.log('Uploading image to:', storageRef.fullPath);
-      
-      const uploadTask = uploadBytesResumable(storageRef, processedFile);
-      
-      const url = await new Promise<string>((resolve, reject) => {
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setCandidateUploadProgress(progress);
-            console.log('Image upload progress:', Math.round(progress) + '%');
-          }, 
-          (error) => {
-            console.error('Image upload task error:', error);
-            reject(error);
-          }, 
-          () => {
-            getDownloadURL(uploadTask.snapshot.ref).then(url => {
-              console.log('Image upload complete. URL:', url);
-              resolve(url);
-            }).catch(reject);
-          }
-        );
-      });
-      setUploadedImageUrl(url);
-      setCandidateUploadProgress(null);
-      setCandidateUploadSuccess(true);
-    } catch (err) {
-      console.error('Image upload catch error:', err);
-      notifyError(err, 'upload image', 'candidates/image');
-    } finally {
-      setUploading(false);
-    }
+    setCandidateUploadProgress(null);
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -451,7 +409,7 @@ export default function AdminSeed() {
       return;
     }
 
-    if (!uploadedImageUrl && !editingCandidateId) {
+    if (!imageFile && !uploadedImageUrl && !editingCandidateId) {
       setErrorMessage('Please upload a candidate profile image');
       return;
     }
@@ -459,6 +417,39 @@ export default function AdminSeed() {
     setUploading(true);
     
     try {
+      let finalImageUrl = uploadedImageUrl;
+      
+      if (imageFile) {
+        setCandidateUploadProgress(0);
+        const fileName = sanitizeFileName(imageFile.name || 'candidate.jpg');
+        const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
+        
+        const uploadTask = uploadBytesResumable(storageRef, imageFile);
+        finalImageUrl = await new Promise<string>((resolve, reject) => {
+          uploadTask.on('state_changed', 
+            (snapshot) => {
+              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+              setCandidateUploadProgress(progress);
+            }, 
+            reject, 
+            () => {
+              getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
+            }
+          );
+        });
+        setCandidateUploadSuccess(true);
+        setCandidateUploadProgress(null);
+
+        // Delete old image if replacing
+        const oldCandidate = candidates.find(c => c.id === editingCandidateId);
+        if (oldCandidate && oldCandidate.imageUrl && finalImageUrl !== oldCandidate.imageUrl) {
+          try {
+            const oldImageRef = ref(storage, oldCandidate.imageUrl);
+            await deleteObject(oldImageRef);
+          } catch(e) { console.error('Failed to delete old image', e); }
+        }
+      }
+
       const candidateId = editingCandidateId || trimmedName.toLowerCase().replace(/\s+/g, '-');
       
       await setDoc(doc(db, 'candidates', candidateId), {
@@ -467,7 +458,7 @@ export default function AdminSeed() {
         role: role.trim(),
         bio: bio.trim(),
         manifesto: manifesto.trim(),
-        imageUrl: uploadedImageUrl || '',
+        imageUrl: finalImageUrl || '',
         voteCount: editingCandidateId ? candidates.find(c => c.id === editingCandidateId)?.voteCount || 0 : 0
       });
 
@@ -867,6 +858,15 @@ export default function AdminSeed() {
       onConfirm: async () => {
         setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         try {
+          const candidate = candidates.find(c => c.id === id);
+          if (candidate && candidate.imageUrl) {
+            try {
+              const imageRef = ref(storage, candidate.imageUrl);
+              await deleteObject(imageRef);
+            } catch (imgErr) {
+              console.error('Failed to delete candidate image:', imgErr);
+            }
+          }
           await deleteDoc(doc(db, 'candidates', id));
           setSuccessMessage('Candidate deleted successfully!');
         } catch (err) {
