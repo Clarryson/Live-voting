@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+@theme {
+  --color-midnight-bg: #14101A;
+  --color-midnight-surface: #1C1824;
+  --color-midnight-border: #2D2836;
+}
+
+@layer base {
+  body {
+    @apply bg-midnight-bg text-zinc-100;
+  }
+}

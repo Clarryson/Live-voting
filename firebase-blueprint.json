@@ -43,17 +43,20 @@
       "description": "Configuration for the election lifecycle.",
       "type": "object",
       "properties": {
+        "electionName": { "type": "string", "description": "The title of the election." },
+        "bannerUrl": { "type": "string", "description": "URL for the election banner or logo." },
         "openingTime": { "type": "string", "format": "date-time", "description": "When voting starts." },
         "closingTime": { "type": "string", "format": "date-time", "description": "When voting ends." },
-        "status": { "type": "string", "enum": ["upcoming", "live", "closed"], "description": "Current election status." }
+        "status": { "type": "string", "enum": ["upcoming", "live", "paused", "ended"], "description": "Current election status." }
       },
-      "required": ["openingTime", "closingTime", "status"]
+      "required": ["electionName", "openingTime", "closingTime", "status"]
     }
   },
   "firestore": {
     "voters": { "schema": "Voter", "description": "Collection of eligible voters." },
     "candidates": { "schema": "Candidate", "description": "Collection of candidates." },
     "votes": { "schema": "Vote", "description": "Collection of anonymous ballots." },
-    "config": { "schema": "ElectionConfig", "description": "Election settings." }
+    "config": { "schema": "ElectionConfig", "description": "Election settings." },
+    "voting_history": { "schema": "object", "description": "Archived election results." }
   }
 }

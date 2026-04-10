@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, storage, auth } from '../lib/firebase';
-import { doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch, getDocs, query, addDoc, serverTimestamp, orderBy } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot, collection, deleteDoc, writeBatch, getDocs, query, addDoc, serverTimestamp, orderBy, updateDoc } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import * as XLSX from 'xlsx';
 import imageCompression from 'browser-image-compression';
-import { Database, Loader2, Plus, Trash2, Upload, X, UserPlus, User, Users, Image as ImageIcon, FileJson, CheckCircle2, Pencil, Settings, Clock, FileSpreadsheet, RotateCcw, Info, Download, History, Zap, Vote } from 'lucide-react';
+import { Database, Loader2, Plus, Trash2, Upload, X, UserPlus, User, Users, Image as ImageIcon, FileJson, CheckCircle2, Pencil, Settings, Clock, FileSpreadsheet, RotateCcw, Info, Download, History, Zap, Vote, Pause, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 
@@ -72,7 +72,8 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 const VALID_ROLES = ['Chairperson', 'Vice Chairperson', 'Sec.General', 'Treasurer', 'P. Coordinator'];
@@ -118,7 +119,7 @@ export default function AdminSeed() {
   const [editingCandidateId, setEditingCandidateId] = useState<string | null>(null);
   
   // Sidebar State
-  const [activeTab, setActiveTab] = useState<'candidates' | 'voters' | 'bulk' | 'control' | 'history'>('candidates');
+  const [activeTab, setActiveTab] = useState<'candidates' | 'voters' | 'bulk' | 'setup' | 'control' | 'history'>('candidates');
   
   // Settings State
   const [electionName, setElectionName] = useState('Mulembe Nation University Guild Elections 2025');
@@ -185,15 +186,9 @@ export default function AdminSeed() {
         // Convert UTC ISO strings from Firestore to local YYYY-MM-DDTHH:mm for datetime-local input
         const formatForInput = (iso: string) => {
           if (!iso) return '';
-          try {
-            const d = new Date(iso);
-            if (isNaN(d.getTime())) return '';
-            const offset = d.getTimezoneOffset() * 60000;
-            return new Date(d.getTime() - offset).toISOString().slice(0, 16);
-          } catch (e) {
-            console.error('Date formatting failed:', e);
-            return '';
-          }
+          const d = new Date(iso);
+          const offset = d.getTimezoneOffset() * 60000;
+          return new Date(d.getTime() - offset).toISOString().slice(0, 16);
         };
 
         setOpeningTime(formatForInput(data.openingTime));
@@ -243,8 +238,43 @@ export default function AdminSeed() {
     setBannerFile(processedFile);
     setBannerPreview(URL.createObjectURL(processedFile));
     
-    // Upload is deferred to handleSaveSettings
-    setBannerUploadProgress(null);
+    // Instant Upload
+    setUploading(true);
+    setBannerUploadProgress(0);
+    try {
+      const fileName = sanitizeFileName(processedFile.name || 'banner.jpg');
+      const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
+      console.log('Uploading banner to:', storageRef.fullPath);
+      
+      const uploadTask = uploadBytesResumable(storageRef, processedFile);
+      
+      const url = await new Promise<string>((resolve, reject) => {
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setBannerUploadProgress(progress);
+            console.log('Banner upload progress:', Math.round(progress) + '%');
+          }, 
+          (error) => {
+            console.error('Banner upload task error:', error);
+            reject(error);
+          }, 
+          () => {
+            getDownloadURL(uploadTask.snapshot.ref).then(url => {
+              console.log('Banner upload complete. URL:', url);
+              resolve(url);
+            }).catch(reject);
+          }
+        );
+      });
+      setBannerUrl(url);
+      setBannerUploadProgress(null);
+    } catch (err) {
+      console.error('Banner upload catch error:', err);
+      notifyError(err, 'upload banner', 'config/banner');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleBannerChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -281,47 +311,59 @@ export default function AdminSeed() {
     setBannerUrl('');
   };
 
+  const handleQuickStatusUpdate = async (newStatus: 'upcoming' | 'live' | 'paused' | 'ended') => {
+    try {
+      await updateDoc(doc(db, 'config', 'config'), { 
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      });
+      setSuccessMessage(`Election status updated to ${newStatus.toUpperCase()}`);
+    } catch (err: any) {
+      notifyError(err, 'update status', 'config/config');
+    }
+  };
+
+  const handleQuickTimeUpdate = async (type: 'opening' | 'closing', value: string) => {
+    try {
+      const field = type === 'opening' ? 'openingTime' : 'closingTime';
+      await updateDoc(doc(db, 'config', 'config'), { 
+        [field]: value ? new Date(value).toISOString() : null,
+        updatedAt: serverTimestamp()
+      });
+      setSuccessMessage(`${type.charAt(0).toUpperCase() + type.slice(1)} time updated successfully`);
+    } catch (err: any) {
+      notifyError(err, 'update time', 'config/config');
+    }
+  };
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!electionName.trim()) {
+      setErrorMessage('Election name is required');
+      return;
+    }
+    if (!openingTime || !closingTime) {
+      setErrorMessage('Opening and closing times are required');
+      return;
+    }
+    
     setUploading(true);
     try {
-      let finalBannerUrl = bannerUrl;
-      
-      if (bannerFile) {
-        setBannerUploadProgress(0);
-        const fileName = sanitizeFileName(bannerFile.name || 'banner.jpg');
-        const storageRef = ref(storage, `config/banner_${Date.now()}_${fileName}`);
-        
-        const uploadTask = uploadBytesResumable(storageRef, bannerFile);
-        finalBannerUrl = await new Promise<string>((resolve, reject) => {
-          uploadTask.on('state_changed', 
-            (snapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setBannerUploadProgress(progress);
-            }, 
-            reject, 
-            () => {
-              getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
-            }
-          );
-        });
-        setBannerUploadProgress(null);
-      }
-
       const configData: any = {
-        electionName,
-        bannerUrl: finalBannerUrl,
-        status: electionStatus
+        electionName: electionName.trim(),
+        bannerUrl: bannerUrl,
+        status: electionStatus,
+        openingTime: new Date(openingTime).toISOString(),
+        closingTime: new Date(closingTime).toISOString(),
+        updatedAt: serverTimestamp()
       };
-
-      if (openingTime) configData.openingTime = new Date(openingTime).toISOString();
-      if (closingTime) configData.closingTime = new Date(closingTime).toISOString();
 
       await setDoc(doc(db, 'config', 'config'), configData);
       
       setBannerFile(null);
       setBannerPreview(null);
-      setSuccessMessage('Settings saved successfully!');
+      setSuccessMessage(activeTab === 'setup' ? 'New election created successfully!' : 'Election settings updated!');
+      if (activeTab === 'setup') setActiveTab('control');
     } catch (err: any) {
       notifyError(err, 'save settings', 'config/config');
     } finally {
@@ -329,37 +371,96 @@ export default function AdminSeed() {
     }
   };
 
+  const handleStartNewElection = () => {
+    setConfirmModal({
+      title: 'Start New Election',
+      message: 'This will clear the current configuration form so you can define a new election. Note: This does not delete existing data until you save the new configuration. Would you like to proceed?',
+      onConfirm: async () => {
+        setElectionName('');
+        setOpeningTime('');
+        setClosingTime('');
+        setElectionStatus('upcoming');
+        setBannerUrl('');
+        setBannerPreview(null);
+        setBannerFile(null);
+        setActiveTab('setup');
+        setConfirmModal(null);
+      }
+    });
+  };
+
   const processImage = async (file: File) => {
     if (!file.type.startsWith('image/')) {
       setErrorMessage('Invalid file type. Please select an image.');
       return;
     }
-    let processedFile = file;
+
+    // Set preview immediately for better UX
+    const localPreview = URL.createObjectURL(file);
+    setImagePreview(localPreview);
+    setImageFile(file);
+    setCandidateUploadSuccess(false);
+    setUploadedImageUrl(null);
+
     console.log('Starting image process:', file.name, file.size, file.type);
     
     // Compression
     setCompressing(true);
+    let processedFile = file;
     try {
       const options = {
         maxSizeMB: 0.2,
-        maxWidthOrHeight: 600,
+        maxWidthOrHeight: 800,
         useWebWorker: true
       };
       processedFile = await imageCompression(file, options);
       console.log('Image compressed:', processedFile.size);
+      
+      // Update file state with compressed version but keep preview
+      setImageFile(processedFile);
     } catch (err) {
       console.error('Image compression failed:', err);
     } finally {
       setCompressing(false);
     }
 
-    setImageFile(processedFile);
-    setImagePreview(URL.createObjectURL(processedFile));
-
-    // Upload is deferred to handleAddCandidate
-    setUploadedImageUrl(null);
-    setCandidateUploadSuccess(false);
-    setCandidateUploadProgress(null);
+    // Instant Upload
+    setUploading(true);
+    setCandidateUploadProgress(0);
+    try {
+      const fileName = sanitizeFileName(processedFile.name || 'candidate.jpg');
+      const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
+      console.log('Uploading image to:', storageRef.fullPath);
+      
+      const uploadTask = uploadBytesResumable(storageRef, processedFile);
+      
+      const url = await new Promise<string>((resolve, reject) => {
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setCandidateUploadProgress(progress);
+          }, 
+          (error) => {
+            console.error('Image upload task error:', error);
+            reject(error);
+          }, 
+          () => {
+            getDownloadURL(uploadTask.snapshot.ref).then(url => {
+              console.log('Image upload complete. URL:', url);
+              resolve(url);
+            }).catch(reject);
+          }
+        );
+      });
+      setUploadedImageUrl(url);
+      setCandidateUploadProgress(null);
+      setCandidateUploadSuccess(true);
+    } catch (err) {
+      console.error('Image upload catch error:', err);
+      notifyError(err, 'upload image', 'candidates/image');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -409,7 +510,7 @@ export default function AdminSeed() {
       return;
     }
 
-    if (!imageFile && !uploadedImageUrl && !editingCandidateId) {
+    if (!uploadedImageUrl && !editingCandidateId) {
       setErrorMessage('Please upload a candidate profile image');
       return;
     }
@@ -417,39 +518,6 @@ export default function AdminSeed() {
     setUploading(true);
     
     try {
-      let finalImageUrl = uploadedImageUrl;
-      
-      if (imageFile) {
-        setCandidateUploadProgress(0);
-        const fileName = sanitizeFileName(imageFile.name || 'candidate.jpg');
-        const storageRef = ref(storage, `candidates/${Date.now()}_${fileName}`);
-        
-        const uploadTask = uploadBytesResumable(storageRef, imageFile);
-        finalImageUrl = await new Promise<string>((resolve, reject) => {
-          uploadTask.on('state_changed', 
-            (snapshot) => {
-              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-              setCandidateUploadProgress(progress);
-            }, 
-            reject, 
-            () => {
-              getDownloadURL(uploadTask.snapshot.ref).then(resolve).catch(reject);
-            }
-          );
-        });
-        setCandidateUploadSuccess(true);
-        setCandidateUploadProgress(null);
-
-        // Delete old image if replacing
-        const oldCandidate = candidates.find(c => c.id === editingCandidateId);
-        if (oldCandidate && oldCandidate.imageUrl && finalImageUrl !== oldCandidate.imageUrl) {
-          try {
-            const oldImageRef = ref(storage, oldCandidate.imageUrl);
-            await deleteObject(oldImageRef);
-          } catch(e) { console.error('Failed to delete old image', e); }
-        }
-      }
-
       const candidateId = editingCandidateId || trimmedName.toLowerCase().replace(/\s+/g, '-');
       
       await setDoc(doc(db, 'candidates', candidateId), {
@@ -458,7 +526,7 @@ export default function AdminSeed() {
         role: role.trim(),
         bio: bio.trim(),
         manifesto: manifesto.trim(),
-        imageUrl: finalImageUrl || '',
+        imageUrl: uploadedImageUrl || '',
         voteCount: editingCandidateId ? candidates.find(c => c.id === editingCandidateId)?.voteCount || 0 : 0
       });
 
@@ -859,12 +927,13 @@ export default function AdminSeed() {
         setConfirmModal(prev => prev ? { ...prev, loading: true } : null);
         try {
           const candidate = candidates.find(c => c.id === id);
-          if (candidate && candidate.imageUrl) {
+          if (candidate?.imageUrl && candidate.imageUrl.includes('firebasestorage.googleapis.com')) {
             try {
               const imageRef = ref(storage, candidate.imageUrl);
               await deleteObject(imageRef);
-            } catch (imgErr) {
-              console.error('Failed to delete candidate image:', imgErr);
+              console.log('Candidate image deleted from storage');
+            } catch (storageErr) {
+              console.error('Failed to delete candidate image:', storageErr);
             }
           }
           await deleteDoc(doc(db, 'candidates', id));
@@ -940,7 +1009,7 @@ export default function AdminSeed() {
         <button 
           onClick={seedDemoData}
           disabled={loading}
-          className="bg-zinc-900 border border-zinc-800 p-3 rounded-full text-zinc-500 hover:text-amber-500 transition-colors shadow-2xl flex items-center gap-2"
+          className="bg-midnight-surface border border-midnight-border p-3 rounded-full text-zinc-500 hover:text-amber-500 transition-colors shadow-2xl flex items-center gap-2"
         >
           {loading ? <Loader2 className="animate-spin" size={20} /> : <Database size={20} />}
           <span className="text-xs font-bold uppercase tracking-widest hidden sm:block">Seed Config</span>
@@ -949,11 +1018,11 @@ export default function AdminSeed() {
 
       {/* Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-sm">
-          <div className="bg-zinc-900 border border-zinc-800 w-full max-w-6xl h-[85vh] rounded-[2.5rem] overflow-hidden flex shadow-2xl">
+        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-midnight-bg/80 backdrop-blur-sm">
+          <div className="bg-midnight-surface border border-midnight-border w-full max-w-6xl h-[85vh] rounded-[2.5rem] overflow-hidden flex shadow-2xl">
             
             {/* Sidebar */}
-            <div className="w-64 bg-zinc-950 border-r border-zinc-800 flex flex-col p-6">
+            <div className="w-64 bg-midnight-bg border-r border-midnight-border flex flex-col p-6">
               <div className="flex items-center gap-3 mb-10 px-2">
                 <div className="w-8 h-8 bg-amber-500 rounded-lg flex items-center justify-center text-zinc-950">
                   <Database size={18} />
@@ -981,6 +1050,12 @@ export default function AdminSeed() {
                   onClick={() => setActiveTab('bulk')} 
                 />
                 <SidebarItem 
+                  icon={<Plus size={18} />} 
+                  label="Create Election" 
+                  active={activeTab === 'setup'} 
+                  onClick={() => setActiveTab('setup')} 
+                />
+                <SidebarItem 
                   icon={<Settings size={18} />} 
                   label="Election Control" 
                   active={activeTab === 'control'} 
@@ -994,10 +1069,10 @@ export default function AdminSeed() {
                 />
               </nav>
 
-              <div className="pt-6 border-t border-zinc-800">
+              <div className="pt-6 border-t border-midnight-border">
                 <button 
                   onClick={() => setShowModal(false)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-zinc-500 hover:text-white hover:bg-zinc-900 rounded-xl transition-all text-xs font-black uppercase tracking-widest"
+                  className="w-full flex items-center gap-3 px-4 py-3 text-zinc-500 hover:text-white hover:bg-midnight-surface rounded-xl transition-all text-xs font-black uppercase tracking-widest"
                 >
                   <X size={18} />
                   Close Hub
@@ -1006,14 +1081,14 @@ export default function AdminSeed() {
             </div>
 
             {/* Content Area */}
-            <div className="flex-1 flex flex-col min-w-0 bg-zinc-900/50">
-              <div className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/30">
+            <div className="flex-1 flex flex-col min-w-0 bg-midnight-surface/50">
+              <div className="p-8 border-b border-midnight-border flex justify-between items-center bg-midnight-surface/30">
                 <div>
                   <h3 className="text-xl font-black uppercase tracking-tighter text-white">
-                    {activeTab === 'candidates' ? 'Candidate Management' : activeTab === 'voters' ? 'Voter Management' : activeTab === 'bulk' ? 'Bulk Data Import' : activeTab === 'history' ? 'Voting History' : 'Election Control Center'}
+                    {activeTab === 'candidates' ? 'Candidate Management' : activeTab === 'voters' ? 'Voter Management' : activeTab === 'bulk' ? 'Bulk Data Import' : activeTab === 'history' ? 'Voting History' : activeTab === 'setup' ? 'Create New Election' : 'Election Control Center'}
                   </h3>
                   <p className="text-[10px] text-zinc-500 font-black uppercase tracking-[0.2em] mt-1">
-                    {activeTab === 'candidates' ? 'Register and manage election candidates' : activeTab === 'voters' ? 'Manage eligible student voters' : activeTab === 'bulk' ? 'Import large datasets via JSON or CSV' : activeTab === 'history' ? 'Review past election results and archives' : 'Configure election timing, status, and branding'}
+                    {activeTab === 'candidates' ? 'Register and manage election candidates' : activeTab === 'voters' ? 'Manage eligible student voters' : activeTab === 'bulk' ? 'Import large datasets via JSON or CSV' : activeTab === 'history' ? 'Review past election results and archives' : activeTab === 'setup' ? 'Define parameters for a new election cycle' : 'Configure election timing, status, and branding'}
                   </p>
                 </div>
                 
@@ -1056,7 +1131,7 @@ export default function AdminSeed() {
                           <input 
                             ref={nameInputRef}
                             value={name} onChange={e => setName(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
                             placeholder="e.g. Wanjiku Auma"
                           />
                         </div>
@@ -1067,7 +1142,7 @@ export default function AdminSeed() {
                             </label>
                             <select 
                               value={faculty} onChange={e => setFaculty(e.target.value)}
-                              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
                             >
                               {['Engineering', 'Business', 'Science', 'Arts & Humanities', 'Law', 'Education'].map(f => (
                                 <option key={f} value={f}>{f}</option>
@@ -1080,7 +1155,7 @@ export default function AdminSeed() {
                             </label>
                             <select 
                               value={role} onChange={e => setRole(e.target.value)}
-                              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
                             >
                               <option value="">Select Position</option>
                               {VALID_ROLES.map(r => (
@@ -1093,14 +1168,14 @@ export default function AdminSeed() {
                           <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Biography</label>
                           <textarea 
                             value={bio} onChange={e => setBio(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm h-24 resize-none"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm h-24 resize-none"
                           />
                         </div>
                         <div className="space-y-2">
                           <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Manifesto Summary</label>
                           <textarea 
                             value={manifesto} onChange={e => setManifesto(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm h-24 resize-none"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm h-24 resize-none"
                           />
                         </div>
                         
@@ -1113,16 +1188,16 @@ export default function AdminSeed() {
                             onDragLeave={handleDragLeave}
                             onDrop={handleDrop}
                             className={cn(
-                              "flex items-center gap-6 p-6 bg-zinc-950 border border-dashed rounded-2xl transition-all",
-                              isDragging ? "border-amber-500 bg-amber-500/5 scale-[1.02]" : "border-zinc-800"
+                              "flex items-center gap-6 p-6 bg-midnight-bg border border-dashed rounded-2xl transition-all",
+                              isDragging ? "border-amber-500 bg-amber-500/5 scale-[1.02]" : "border-midnight-border"
                             )}
                           >
-                            <div className="w-24 h-24 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
+                            <div className="w-24 h-24 rounded-2xl bg-midnight-surface border border-midnight-border flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
                               {imagePreview ? (
                                 <>
                                   <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
                                   {candidateUploadProgress !== null && (
-                                    <div className="absolute inset-0 bg-zinc-950/60 flex items-center justify-center backdrop-blur-[2px]">
+                                    <div className="absolute inset-0 bg-midnight-bg/60 flex items-center justify-center backdrop-blur-[2px]">
                                       <Loader2 className="animate-spin text-amber-500" size={24} />
                                     </div>
                                   )}
@@ -1144,7 +1219,7 @@ export default function AdminSeed() {
                             
                             <label className="flex-1 flex flex-col gap-2">
                               <div className={cn(
-                                "flex items-center justify-center gap-2 bg-zinc-900 border rounded-xl px-4 py-3 cursor-pointer transition-all group relative overflow-hidden",
+                                "flex items-center justify-center gap-2 bg-midnight-surface border rounded-xl px-4 py-3 cursor-pointer transition-all group relative overflow-hidden",
                                 candidateUploadSuccess ? "border-green-500/50 bg-green-500/5" : "border-zinc-800 hover:border-amber-500/50"
                               )}>
                                 <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
@@ -1198,7 +1273,7 @@ export default function AdminSeed() {
                                 setImageFile(null);
                                 setImagePreview(null);
                               }}
-                              className="px-6 bg-zinc-800 text-white font-black py-4 rounded-xl hover:bg-zinc-700 transition-all"
+                              className="px-6 bg-midnight-surface text-white font-black py-4 rounded-xl hover:bg-white/5 transition-all"
                             >
                               Cancel
                             </button>
@@ -1211,12 +1286,12 @@ export default function AdminSeed() {
                       <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Current Candidates ({candidates.length})</h4>
                       <div className="space-y-3">
                         {candidates.map(c => (
-                          <div key={c.id} className="bg-zinc-950/50 border border-zinc-800 p-4 rounded-2xl flex items-center justify-between group hover:border-zinc-700 transition-all">
+                          <div key={c.id} className="bg-midnight-bg/50 border border-midnight-border p-4 rounded-2xl flex items-center justify-between group hover:border-white/10 transition-all">
                             <div className="flex items-center gap-4">
                               {c.imageUrl ? (
                                 <img src={c.imageUrl} alt={c.name} className="w-12 h-12 rounded-xl object-cover border border-zinc-800" referrerPolicy="no-referrer" />
                               ) : (
-                                <div className="w-12 h-12 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500">
+                                <div className="w-12 h-12 rounded-xl bg-midnight-surface flex items-center justify-center text-white/40">
                                   <ImageIcon size={20} />
                                 </div>
                               )}
@@ -1251,7 +1326,7 @@ export default function AdminSeed() {
                           </div>
                         ))}
                         {candidates.length === 0 && (
-                          <div className="text-center py-12 border border-dashed border-zinc-800 rounded-3xl">
+                          <div className="text-center py-12 border border-dashed border-midnight-border rounded-3xl">
                             <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">No candidates found</p>
                           </div>
                         )}
@@ -1271,7 +1346,7 @@ export default function AdminSeed() {
                           </label>
                           <input 
                             value={voterAdm} onChange={e => setVoterAdm(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm font-mono"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm font-mono"
                             placeholder="e.g. BIT/001/2021"
                           />
                         </div>
@@ -1282,7 +1357,7 @@ export default function AdminSeed() {
                           <input 
                             type="email"
                             value={voterEmail} onChange={e => setVoterEmail(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
                             placeholder="e.g. student@mu.ac.ke"
                           />
                         </div>
@@ -1292,7 +1367,7 @@ export default function AdminSeed() {
                           </label>
                           <select 
                             value={voterFaculty} onChange={e => setVoterFaculty(e.target.value)}
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                            className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
                           >
                             {['Engineering', 'Business', 'Science', 'Arts & Humanities', 'Law', 'Education'].map(f => (
                               <option key={f} value={f}>{f}</option>
@@ -1317,7 +1392,7 @@ export default function AdminSeed() {
                                 setVoterAdm('');
                                 setVoterEmail('');
                               }}
-                              className="px-6 bg-zinc-800 text-white font-black py-4 rounded-xl hover:bg-zinc-700 transition-all"
+                              className="px-6 bg-midnight-surface text-white font-black py-4 rounded-xl hover:bg-white/5 transition-all"
                             >
                               Cancel
                             </button>
@@ -1330,11 +1405,11 @@ export default function AdminSeed() {
                       <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Registered Voters ({voters.length})</h4>
                       <div className="space-y-3">
                         {voters.map(v => (
-                          <div key={v.id} className="bg-zinc-950/50 border border-zinc-800 p-4 rounded-2xl flex items-center justify-between group hover:border-zinc-700 transition-all">
+                          <div key={v.id} className="bg-midnight-bg/50 border border-midnight-border p-4 rounded-2xl flex items-center justify-between group hover:border-white/10 transition-all">
                             <div className="flex items-center gap-4">
                               <div className={cn(
                                 "w-10 h-10 rounded-xl flex items-center justify-center transition-colors",
-                                v.hasVoted ? "bg-green-500/10 text-green-500" : "bg-zinc-800 text-zinc-500"
+                                v.hasVoted ? "bg-green-500/10 text-green-500" : "bg-midnight-surface text-zinc-500"
                               )}>
                                 <User size={20} />
                               </div>
@@ -1348,7 +1423,7 @@ export default function AdminSeed() {
                                     <CheckCircle2 size={8} /> Voted
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center gap-1 text-[8px] font-black text-zinc-500 uppercase tracking-widest bg-zinc-500/10 px-2 py-0.5 rounded-full border border-zinc-800">
+                                  <span className="inline-flex items-center gap-1 text-[8px] font-black text-white/40 uppercase tracking-widest bg-white/5 px-2 py-0.5 rounded-full border border-midnight-border">
                                     <Clock size={8} /> Pending
                                   </span>
                                 )}
@@ -1371,7 +1446,7 @@ export default function AdminSeed() {
                           </div>
                         ))}
                         {voters.length === 0 && (
-                          <div className="text-center py-12 border border-dashed border-zinc-800 rounded-3xl">
+                          <div className="text-center py-12 border border-dashed border-midnight-border rounded-3xl">
                             <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">No voters found</p>
                           </div>
                         )}
@@ -1380,7 +1455,7 @@ export default function AdminSeed() {
                   </div>
                 ) : activeTab === 'bulk' ? (
                   <div className="max-w-3xl mx-auto space-y-8">
-                    <div className="flex bg-zinc-950 p-1 rounded-2xl border border-zinc-800 w-fit mx-auto">
+                    <div className="flex bg-midnight-bg p-1 rounded-2xl border border-midnight-border w-fit mx-auto">
                       <button 
                         onClick={() => setBulkMode('candidates')}
                         className={cn(
@@ -1401,13 +1476,13 @@ export default function AdminSeed() {
                       </button>
                     </div>
 
-                    <div className="bg-zinc-950 p-6 rounded-3xl border border-zinc-800 space-y-6">
+                    <div className="bg-midnight-bg p-6 rounded-3xl border border-midnight-border space-y-6">
                       <div className="flex items-center justify-between">
                         <div className="space-y-1">
                           <h5 className="text-sm font-bold text-white">Import Data</h5>
                           <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Upload Excel/CSV or paste text</p>
                         </div>
-                        <label className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 px-4 py-2 rounded-xl cursor-pointer hover:border-amber-500 transition-all group">
+                        <label className="flex items-center gap-2 bg-midnight-surface border border-midnight-border px-4 py-2 rounded-xl cursor-pointer hover:border-amber-500 transition-all group">
                           <input type="file" accept=".xlsx, .xls, .csv" onChange={handleExcelUpload} className="hidden" />
                           <FileSpreadsheet size={16} className="text-zinc-500 group-hover:text-amber-500" />
                           <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 group-hover:text-zinc-300">Upload Excel</span>
@@ -1417,7 +1492,7 @@ export default function AdminSeed() {
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="space-y-3">
                           <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">Format: CSV / Simple List</p>
-                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800/50">
+                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-midnight-surface/50 p-4 rounded-2xl border border-midnight-border/50">
                             {bulkMode === 'voters' 
                               ? `BIT/001/2021, student1@mu.ac.ke, Engineering\nBIT/002/2021, student2@mu.ac.ke, Business`
                               : `John Doe, Engineering, Chairperson\nJane Smith, Business, Sec.General`}
@@ -1425,7 +1500,7 @@ export default function AdminSeed() {
                         </div>
                         <div className="space-y-3">
                           <p className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Format: JSON Array</p>
-                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800/50">
+                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-midnight-surface/50 p-4 rounded-2xl border border-midnight-border/50">
                             {bulkMode === 'voters'
                               ? `[ { "admissionNumber": "...", "email": "...", "faculty": "..." } ]`
                               : `[ { "name": "...", "faculty": "...", "role": "..." } ]`}
@@ -1433,7 +1508,7 @@ export default function AdminSeed() {
                         </div>
                         <div className="space-y-3">
                           <p className="text-[10px] font-black text-green-500 uppercase tracking-widest">Excel Headers</p>
-                          <pre className="text-[10px] text-zinc-400 font-mono leading-relaxed bg-zinc-900/50 p-4 rounded-2xl border border-zinc-800/50">
+                          <pre className="text-[10px] text-white/40 font-mono leading-relaxed bg-midnight-surface/50 p-4 rounded-2xl border border-midnight-border/50">
                             {bulkMode === 'voters'
                               ? `admissionNumber, email, faculty`
                               : `name, faculty, role, bio, manifesto`}
@@ -1445,7 +1520,7 @@ export default function AdminSeed() {
                         value={bulkData}
                         onChange={e => setBulkData(e.target.value)}
                         placeholder={`Paste your ${bulkMode} data here...`}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl px-6 py-6 focus:border-amber-500 outline-none transition-all text-sm font-mono h-[300px] resize-none"
+                        className="w-full bg-midnight-bg border border-midnight-border rounded-2xl px-6 py-6 focus:border-amber-500 outline-none transition-all text-sm font-mono h-[300px] resize-none"
                       />
                       
                       <button 
@@ -1461,7 +1536,7 @@ export default function AdminSeed() {
                   <div className="space-y-8">
                     <div className="grid grid-cols-1 gap-6">
                       {history.map((item) => (
-                        <div key={item.id} className="bg-zinc-950/50 border border-zinc-800 rounded-3xl p-8 space-y-6">
+                        <div key={item.id} className="bg-midnight-bg/50 border border-midnight-border rounded-3xl p-8 space-y-6">
                           <div className="flex justify-between items-start">
                             <div className="flex items-center gap-4">
                               <div className="w-12 h-12 bg-blue-500/10 rounded-2xl flex items-center justify-center text-blue-500">
@@ -1500,11 +1575,11 @@ export default function AdminSeed() {
 
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             {item.results?.map((cand: any) => (
-                              <div key={cand.id} className="bg-zinc-900/50 border border-zinc-800 p-4 rounded-2xl flex items-center gap-4">
+                              <div key={cand.id} className="bg-midnight-surface/50 border border-midnight-border p-4 rounded-2xl flex items-center gap-4">
                                 {cand.imageUrl ? (
                                   <img src={cand.imageUrl} alt={cand.name} className="w-10 h-10 rounded-xl object-cover border border-zinc-800" referrerPolicy="no-referrer" />
                                 ) : (
-                                  <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500">
+                                  <div className="w-10 h-10 rounded-xl bg-midnight-surface flex items-center justify-center text-white/40">
                                     <User size={18} />
                                   </div>
                                 )}
@@ -1519,7 +1594,7 @@ export default function AdminSeed() {
                       ))}
                       {history.length === 0 && (
                         <div className="text-center py-24 border border-dashed border-zinc-800 rounded-[3rem]">
-                          <div className="w-16 h-16 bg-zinc-900 rounded-3xl flex items-center justify-center text-zinc-700 mx-auto mb-6">
+                          <div className="w-16 h-16 bg-midnight-surface rounded-3xl flex items-center justify-center text-white/20 mx-auto mb-6">
                             <History size={32} />
                           </div>
                           <p className="text-sm text-zinc-500 font-bold uppercase tracking-widest">No archived elections found</p>
@@ -1528,33 +1603,94 @@ export default function AdminSeed() {
                       )}
                     </div>
                   </div>
-                ) : (
+                ) : activeTab === 'setup' || activeTab === 'control' ? (
                   <div className="max-w-2xl mx-auto space-y-8">
-                    <div className="bg-zinc-950 border border-zinc-800 rounded-3xl p-8 space-y-8">
+                    {activeTab === 'control' && (
+                      <div className="space-y-6">
+                        <div className="bg-midnight-bg border border-midnight-border rounded-3xl p-6 sm:p-8">
+                          <div className="flex items-center justify-between mb-8">
+                            <div>
+                              <h4 className="text-lg font-bold">Quick Status Control</h4>
+                              <p className="text-xs text-zinc-500 uppercase font-black tracking-widest">Immediate state override</p>
+                            </div>
+                            <div className={cn(
+                              "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border animate-pulse",
+                              electionStatus === 'live' ? "bg-green-500/10 border-green-500/20 text-green-500" :
+                              electionStatus === 'paused' ? "bg-amber-500/10 border-amber-500/20 text-amber-500" :
+                              "bg-red-500/10 border-red-500/20 text-red-500"
+                            )}>
+                              Current: {electionStatus}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                            {[
+                              { id: 'upcoming', label: 'Upcoming', color: 'bg-blue-500', icon: <Clock size={14} /> },
+                              { id: 'live', label: 'Go Live', color: 'bg-green-500', icon: <Activity size={14} /> },
+                              { id: 'paused', label: 'Pause', color: 'bg-amber-500', icon: <Pause size={14} /> },
+                              { id: 'ended', label: 'End Now', color: 'bg-red-500', icon: <X size={14} /> }
+                            ].map((s) => (
+                              <button
+                                key={s.id}
+                                onClick={() => handleQuickStatusUpdate(s.id as any)}
+                                className={cn(
+                                  "flex flex-col items-center gap-3 p-4 rounded-2xl border transition-all group",
+                                  electionStatus === s.id 
+                                    ? "bg-midnight-surface border-amber-500 shadow-lg shadow-amber-500/10" 
+                                    : "bg-midnight-bg border-midnight-border hover:border-white/10"
+                                )}
+                              >
+                                <div className={cn(
+                                  "w-10 h-10 rounded-xl flex items-center justify-center transition-all",
+                                  electionStatus === s.id ? s.color + " text-midnight-bg" : "bg-midnight-surface text-white/40 group-hover:text-white/60"
+                                )}>
+                                  {s.icon}
+                                </div>
+                                <span className={cn("text-[10px] font-black uppercase tracking-widest", electionStatus === s.id ? "text-white" : "text-zinc-500")}>
+                                  {s.label}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button 
+                            onClick={handleStartNewElection}
+                            className="flex items-center gap-2 px-4 py-2 bg-midnight-surface border border-midnight-border rounded-xl text-[10px] font-black uppercase tracking-widest text-white/40 hover:text-amber-500 hover:border-amber-500/50 transition-all"
+                          >
+                            <Plus size={14} /> Start Fresh Election
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="bg-midnight-bg border border-midnight-border rounded-3xl p-8 space-y-8">
                       <div className="flex items-center gap-4 pb-6 border-b border-zinc-900">
                         <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex items-center justify-center text-amber-500">
-                          <Settings size={24} />
+                          {activeTab === 'setup' ? <Plus size={24} /> : <Settings size={24} />}
                         </div>
                         <div>
-                          <h4 className="text-lg font-bold">Election Control</h4>
-                          <p className="text-xs text-zinc-500">Set election times and operational status</p>
+                          <h4 className="text-lg font-bold">{activeTab === 'setup' ? 'New Election Setup' : 'Election Configuration'}</h4>
+                          <p className="text-xs text-zinc-500">{activeTab === 'setup' ? 'Define the parameters for your new election' : 'Update current election parameters'}</p>
                         </div>
                       </div>
 
                       <form onSubmit={handleSaveSettings} className="space-y-6">
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Election Name</label>
+                          <label className="text-[10px] font-black text-white/40 uppercase tracking-widest">Election Title / Name</label>
                           <input 
                             value={electionName} onChange={e => setElectionName(e.target.value)}
-                            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
-                            placeholder="e.g. Guild Elections 2025"
+                            className="w-full bg-midnight-surface border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                            placeholder="e.g. Student Guild Elections 2026"
+                            required
                           />
                         </div>
                         
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                           <div className="space-y-2">
                             <div className="flex justify-between items-center">
-                              <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                              <label className="text-[10px] font-black text-white/40 uppercase tracking-widest flex items-center gap-2">
                                 <Clock size={12} /> Opening Time
                               </label>
                               <div className="flex gap-2">
@@ -1563,7 +1699,9 @@ export default function AdminSeed() {
                                   onClick={() => {
                                     const d = new Date();
                                     const offset = d.getTimezoneOffset() * 60000;
-                                    setOpeningTime(new Date(d.getTime() - offset).toISOString().slice(0, 16));
+                                    const localIso = new Date(d.getTime() - offset).toISOString().slice(0, 16);
+                                    setOpeningTime(localIso);
+                                    if (activeTab === 'control') handleQuickTimeUpdate('opening', localIso);
                                   }}
                                   className="text-[8px] font-black text-amber-500 uppercase tracking-widest hover:text-amber-400"
                                 >
@@ -1571,7 +1709,10 @@ export default function AdminSeed() {
                                 </button>
                                 <button 
                                   type="button"
-                                  onClick={() => setOpeningTime('')}
+                                  onClick={() => {
+                                    setOpeningTime('');
+                                    if (activeTab === 'control') handleQuickTimeUpdate('opening', '');
+                                  }}
                                   className="text-[8px] font-black text-red-500 uppercase tracking-widest hover:text-red-400"
                                 >
                                   Clear
@@ -1581,12 +1722,13 @@ export default function AdminSeed() {
                             <input 
                               type="datetime-local"
                               value={openingTime} onChange={e => setOpeningTime(e.target.value)}
-                              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              className="w-full bg-midnight-surface border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              required
                             />
                           </div>
                           <div className="space-y-2">
                             <div className="flex justify-between items-center">
-                              <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest flex items-center gap-2">
+                              <label className="text-[10px] font-black text-white/40 uppercase tracking-widest flex items-center gap-2">
                                 <Clock size={12} /> Closing Time
                               </label>
                               <div className="flex gap-2">
@@ -1595,7 +1737,9 @@ export default function AdminSeed() {
                                   onClick={() => {
                                     const d = new Date();
                                     const offset = d.getTimezoneOffset() * 60000;
-                                    setClosingTime(new Date(d.getTime() - offset).toISOString().slice(0, 16));
+                                    const localIso = new Date(d.getTime() - offset).toISOString().slice(0, 16);
+                                    setClosingTime(localIso);
+                                    if (activeTab === 'control') handleQuickTimeUpdate('closing', localIso);
                                   }}
                                   className="text-[8px] font-black text-amber-500 uppercase tracking-widest hover:text-amber-400"
                                 >
@@ -1603,7 +1747,10 @@ export default function AdminSeed() {
                                 </button>
                                 <button 
                                   type="button"
-                                  onClick={() => setClosingTime('')}
+                                  onClick={() => {
+                                    setClosingTime('');
+                                    if (activeTab === 'control') handleQuickTimeUpdate('closing', '');
+                                  }}
                                   className="text-[8px] font-black text-red-500 uppercase tracking-widest hover:text-red-400"
                                 >
                                   Clear
@@ -1613,15 +1760,17 @@ export default function AdminSeed() {
                             <input 
                               type="datetime-local"
                               value={closingTime} onChange={e => setClosingTime(e.target.value)}
-                              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              className="w-full bg-midnight-surface border border-midnight-border rounded-xl px-4 py-3 focus:border-amber-500 outline-none transition-all text-sm"
+                              required
                             />
                           </div>
                         </div>
 
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Election Status</label>
-                          <div className="grid grid-cols-3 gap-3">
+                          <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Initial Election Status</label>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                             {[
+                              { id: 'upcoming', label: 'Upcoming', color: 'bg-blue-500' },
                               { id: 'live', label: 'Live', color: 'bg-green-500' },
                               { id: 'paused', label: 'Paused', color: 'bg-amber-500' },
                               { id: 'ended', label: 'Ended', color: 'bg-red-500' }
@@ -1633,8 +1782,8 @@ export default function AdminSeed() {
                                 className={cn(
                                   "flex flex-col items-center gap-2 p-4 rounded-2xl border transition-all",
                                   electionStatus === s.id 
-                                    ? "bg-zinc-900 border-amber-500 shadow-lg shadow-amber-500/5" 
-                                    : "bg-zinc-950 border-zinc-800 hover:border-zinc-700"
+                                    ? "bg-midnight-surface border-amber-500 shadow-lg shadow-amber-500/5" 
+                                    : "bg-midnight-bg border-midnight-border hover:border-white/10"
                                 )}
                               >
                                 <div className={cn("w-3 h-3 rounded-full", s.color, electionStatus === s.id && "animate-pulse")} />
@@ -1653,11 +1802,11 @@ export default function AdminSeed() {
                             onDragLeave={handleBannerDragLeave}
                             onDrop={handleBannerDrop}
                             className={cn(
-                              "flex items-center gap-6 p-6 bg-zinc-900 border border-dashed rounded-2xl transition-all",
+                              "flex items-center gap-6 p-6 bg-midnight-surface border border-dashed rounded-2xl transition-all",
                               isDraggingBanner ? "border-amber-500 bg-amber-500/5 scale-[1.02]" : "border-zinc-800"
                             )}
                           >
-                            <div className="w-32 h-20 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
+                            <div className="w-32 h-20 rounded-xl bg-midnight-bg border border-midnight-border flex items-center justify-center overflow-hidden relative group shrink-0 shadow-inner">
                               {bannerPreview || bannerUrl ? (
                                 <>
                                   <img src={bannerPreview || bannerUrl} alt="Banner" className="w-full h-full object-cover" />
@@ -1676,7 +1825,7 @@ export default function AdminSeed() {
                             </div>
                             
                             <label className="flex-1 flex flex-col gap-2">
-                              <div className="flex items-center justify-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group relative overflow-hidden">
+                              <div className="flex items-center justify-center gap-2 bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 cursor-pointer hover:border-amber-500/50 transition-all group relative overflow-hidden">
                                 <input type="file" accept="image/*" onChange={handleBannerChange} className="hidden" />
                                 <Upload size={18} className="text-zinc-500 group-hover:text-amber-500" />
                                 <span className="text-xs text-zinc-500 group-hover:text-zinc-300">
@@ -1698,66 +1847,68 @@ export default function AdminSeed() {
                           disabled={uploading}
                           className="w-full bg-amber-500 text-zinc-950 font-black py-4 rounded-xl hover:bg-amber-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-xl shadow-amber-500/20"
                         >
-                          {uploading ? <Loader2 className="animate-spin" /> : <><CheckCircle2 size={18} /> Save Election Configuration</>}
+                          {uploading ? <Loader2 className="animate-spin" /> : <><CheckCircle2 size={18} /> {activeTab === 'setup' ? 'Initialize New Election' : 'Update Election Configuration'}</>}
                         </button>
                       </form>
 
-                      <div className="pt-8 border-t border-zinc-900 space-y-4">
-                        <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6">
-                          <div className="flex items-center gap-4 mb-4">
-                            <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500">
-                              <History size={20} />
+                      {activeTab === 'control' && (
+                        <div className="pt-8 border-t border-zinc-900 space-y-4">
+                          <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-6">
+                            <div className="flex items-center gap-4 mb-4">
+                              <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-500">
+                                <History size={20} />
+                              </div>
+                              <div>
+                                <h5 className="text-sm font-bold text-white">Election Archival</h5>
+                                <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Save current results to history</p>
+                              </div>
                             </div>
-                            <div>
-                              <h5 className="text-sm font-bold text-white">Election Archival</h5>
-                              <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Save current results to history</p>
-                            </div>
+                            <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                              Before resetting or wiping data, you can export the current election results and configuration to the voting history for future reference.
+                            </p>
+                            <button 
+                              onClick={handleExportHistory}
+                              disabled={uploading}
+                              className="w-full bg-midnight-surface border border-blue-500/30 text-blue-500 font-black py-4 rounded-xl hover:bg-blue-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                              {uploading ? <Loader2 className="animate-spin" /> : <><Download size={18} /> Export to Voting History</>}
+                            </button>
                           </div>
-                          <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
-                            Before resetting or wiping data, you can export the current election results and configuration to the voting history for future reference.
-                          </p>
-                          <button 
-                            onClick={handleExportHistory}
-                            disabled={uploading}
-                            className="w-full bg-zinc-900 border border-blue-500/30 text-blue-500 font-black py-4 rounded-xl hover:bg-blue-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            {uploading ? <Loader2 className="animate-spin" /> : <><Download size={18} /> Export to Voting History</>}
-                          </button>
-                        </div>
 
-                        <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-6">
-                          <div className="flex items-center gap-4 mb-4">
-                            <div className="w-10 h-10 bg-red-500/10 rounded-xl flex items-center justify-center text-red-500">
-                              <RotateCcw size={20} />
+                          <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-6">
+                            <div className="flex items-center gap-4 mb-4">
+                              <div className="w-10 h-10 bg-red-500/10 rounded-xl flex items-center justify-center text-red-500">
+                                <RotateCcw size={20} />
+                              </div>
+                              <div>
+                                <h5 className="text-sm font-bold text-white">Danger Zone</h5>
+                                <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Resetting will clear all current data</p>
+                              </div>
                             </div>
-                            <div>
-                              <h5 className="text-sm font-bold text-white">Danger Zone</h5>
-                              <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">Resetting will clear all current data</p>
-                            </div>
+                            <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+                              Clearing the election will permanently delete all cast votes, reset candidate tallies to zero, and allow all voters to vote again. This action is irreversible.
+                            </p>
+                            <button 
+                              onClick={handleResetElection}
+                              disabled={uploading}
+                              className="w-full bg-midnight-surface border border-red-500/30 text-red-500 font-black py-4 rounded-xl hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                              {uploading ? <Loader2 className="animate-spin" /> : <><RotateCcw size={18} /> Reset & Clear Election Data</>}
+                            </button>
+
+                            <button 
+                              onClick={handleWipeVoters}
+                              disabled={uploading}
+                              className="w-full bg-midnight-surface border border-red-500/10 text-red-400/50 text-[10px] font-black py-3 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                              {uploading ? <Loader2 className="animate-spin" size={12} /> : <><Trash2 size={12} /> Wipe All Registered Voters</>}
+                            </button>
                           </div>
-                          <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
-                            Clearing the election will permanently delete all cast votes, reset candidate tallies to zero, and allow all voters to vote again. This action is irreversible.
-                          </p>
-                          <button 
-                            onClick={handleResetElection}
-                            disabled={uploading}
-                            className="w-full bg-zinc-900 border border-red-500/30 text-red-500 font-black py-4 rounded-xl hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            {uploading ? <Loader2 className="animate-spin" /> : <><RotateCcw size={18} /> Reset & Clear Election Data</>}
-                          </button>
-
-                          <button 
-                            onClick={handleWipeVoters}
-                            disabled={uploading}
-                            className="w-full bg-zinc-900 border border-red-500/10 text-red-400/50 text-[10px] font-black py-3 rounded-xl hover:bg-red-500/10 hover:text-red-400 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                          >
-                            {uploading ? <Loader2 className="animate-spin" size={12} /> : <><Trash2 size={12} /> Wipe All Registered Voters</>}
-                          </button>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
@@ -1767,12 +1918,12 @@ export default function AdminSeed() {
       {/* Confirm Modal */}
       <AnimatePresence>
         {confirmModal && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-zinc-950/90 backdrop-blur-md">
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-midnight-bg/90 backdrop-blur-md">
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-[2rem] p-8 shadow-2xl space-y-6"
+              className="bg-midnight-surface border border-midnight-border w-full max-w-md rounded-[2rem] p-8 shadow-2xl space-y-6"
             >
               <div className="flex items-center gap-4">
                 <div className={cn(
@@ -1791,7 +1942,7 @@ export default function AdminSeed() {
               <div className="flex gap-3 pt-2">
                 <button 
                   onClick={() => setConfirmModal(null)}
-                  className="flex-1 px-6 py-4 rounded-xl bg-zinc-800 text-zinc-300 font-bold hover:bg-zinc-700 transition-all"
+                  className="flex-1 px-6 py-4 rounded-xl bg-midnight-surface text-white/60 font-bold hover:bg-white/5 transition-all"
                 >
                   Cancel
                 </button>
@@ -1817,7 +1968,7 @@ export default function AdminSeed() {
   );
 }
 
-function SidebarItem({ icon, label, active, onClick }: { icon: any, label: string, active: boolean, onClick: () => void }) {
+function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
   return (
     <button 
       onClick={onClick}
@@ -1825,7 +1976,7 @@ function SidebarItem({ icon, label, active, onClick }: { icon: any, label: strin
         "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group",
         active 
           ? "bg-amber-500 text-zinc-950 font-black shadow-lg shadow-amber-500/10" 
-          : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
+          : "text-white/40 hover:text-white/60 hover:bg-midnight-surface"
       )}
     >
       <div className={cn("transition-transform duration-300", active ? "scale-110" : "group-hover:scale-110")}>

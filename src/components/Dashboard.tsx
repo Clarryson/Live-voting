@@ -50,7 +50,8 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 import { 
@@ -74,6 +75,7 @@ export default function Dashboard({ config }: { config: any }) {
   const [timeLeft, setTimeLeft] = useState<string>('--:--:--');
   const [lastUpdated, setLastUpdated] = useState<string>('just now');
   const [selectedCandidateForModal, setSelectedCandidateForModal] = useState<any | null>(null);
+  const [zoomedCandidate, setZoomedCandidate] = useState<any | null>(null);
   const [statusAlert, setStatusAlert] = useState<{ status: string; prev: string } | null>(null);
   const prevStatusRef = useRef<string | null>(null);
 
@@ -231,7 +233,7 @@ export default function Dashboard({ config }: { config: any }) {
       </AnimatePresence>
 
       {/* Header & Global Indicators */}
-      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 bg-zinc-900/40 border border-zinc-800 p-6 sm:p-8 rounded-[2rem] backdrop-blur-xl shadow-2xl relative overflow-hidden">
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 bg-midnight-surface/40 border border-midnight-border p-6 sm:p-8 rounded-[2rem] backdrop-blur-xl shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-amber-500 via-yellow-500 to-amber-500 animate-pulse" />
         
         <div className="space-y-2 w-full lg:w-auto">
@@ -260,7 +262,7 @@ export default function Dashboard({ config }: { config: any }) {
           </div>
           <div className="flex items-center gap-4">
             {config?.bannerUrl && (
-              <img src={config.bannerUrl} alt="Logo" className="w-12 h-12 rounded-xl object-cover border border-zinc-800 shadow-lg" referrerPolicy="no-referrer" />
+              <img src={config.bannerUrl} alt="Logo" className="w-12 h-12 rounded-xl object-cover border border-midnight-border shadow-lg" referrerPolicy="no-referrer" />
             )}
             <h1 className="text-lg sm:text-xl font-black tracking-tight text-white">
               {config?.electionName || 'Mulembe Nation University Guild Elections 2025'}
@@ -268,7 +270,7 @@ export default function Dashboard({ config }: { config: any }) {
           </div>
         </div>
         
-        <div className="flex items-center gap-4 sm:gap-6 bg-zinc-950/80 p-4 sm:p-6 rounded-2xl border border-amber-500/30 shadow-[0_0_30px_-10px_rgba(245,158,11,0.3)] w-full lg:w-auto justify-between lg:justify-start">
+        <div className="flex items-center gap-4 sm:gap-6 bg-midnight-bg/80 p-4 sm:p-6 rounded-2xl border border-amber-500/30 shadow-[0_0_30px_-10px_rgba(245,158,11,0.3)] w-full lg:w-auto justify-between lg:justify-start">
           <div className="text-right">
             <p className="text-[10px] uppercase tracking-[0.3em] text-zinc-500 font-black mb-1">Time Remaining</p>
             <p className="text-3xl sm:text-4xl lg:text-5xl font-mono font-black text-amber-500 tabular-nums drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]">
@@ -324,13 +326,13 @@ export default function Dashboard({ config }: { config: any }) {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Candidate Standings (Left Column) */}
         <div className="lg:col-span-5 space-y-6">
-          <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] backdrop-blur-sm">
+          <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem] backdrop-blur-sm">
             <div className="flex justify-between items-center mb-8">
-              <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 flex items-center gap-3">
+              <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50 flex items-center gap-3">
                 <Crown size={18} className="text-amber-500" />
                 Guild Chairperson Standings
               </h3>
-              <div className="px-3 py-1 bg-zinc-800 rounded-lg text-[10px] font-bold text-zinc-400">FILTER: CHAIRPERSON</div>
+              <div className="px-3 py-1 bg-midnight-surface rounded-lg text-[10px] font-bold text-white/40">FILTER: CHAIRPERSON</div>
             </div>
             
             <div className="space-y-6">
@@ -359,30 +361,42 @@ export default function Dashboard({ config }: { config: any }) {
                     )}
                     
                     <div className="flex justify-between items-start mb-4 relative z-10">
-                      <button 
-                        onClick={() => setSelectedCandidateForModal(candidate)}
-                        className="flex items-center gap-4 text-left group/btn"
-                      >
+                      <div className="flex items-center gap-4 text-left group/btn">
                         {candidate.imageUrl ? (
-                          <img 
-                            src={candidate.imageUrl} 
-                            alt={candidate.name} 
-                            className="w-14 h-14 rounded-2xl object-cover border border-zinc-800 shadow-inner group-hover/btn:border-amber-500/50 transition-colors" 
-                            referrerPolicy="no-referrer"
-                          />
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setZoomedCandidate(candidate);
+                            }}
+                            className="relative group/img shrink-0"
+                          >
+                            <img 
+                              src={candidate.imageUrl} 
+                              alt={candidate.name} 
+                              className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-cover border-2 border-midnight-border shadow-inner group-hover/img:border-amber-500/50 transition-all" 
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity rounded-2xl flex items-center justify-center">
+                              <span className="text-[8px] font-black text-white uppercase tracking-widest">Zoom</span>
+                            </div>
+                          </button>
                         ) : (
                           <div className={cn(
-                            "w-14 h-14 rounded-2xl border flex items-center justify-center shadow-inner transition-colors",
-                            isLeading ? "bg-amber-500 text-zinc-950 border-amber-400" : isTie && idx <= 1 ? "bg-blue-500 text-white border-blue-400" : "bg-zinc-800 text-zinc-400 border-zinc-700 group-hover/btn:border-amber-500/50"
+                            "w-16 h-16 sm:w-20 sm:h-20 rounded-2xl border flex items-center justify-center shadow-inner transition-colors shrink-0",
+                            isLeading ? "bg-amber-500 text-midnight-bg border-amber-400" : isTie && idx <= 1 ? "bg-blue-500 text-white border-blue-400" : "bg-midnight-surface text-white/40 border-midnight-border group-hover/btn:border-amber-500/50"
                           )}>
-                            <User size={24} />
+                            <User size={28} />
                           </div>
                         )}
-                        <div>
+                        <button 
+                          onClick={() => setSelectedCandidateForModal(candidate)}
+                          className="text-left"
+                        >
                           <h4 className="text-lg font-black tracking-tight text-white group-hover/btn:text-amber-500 transition-colors">{candidate.name}</h4>
                           <p className="text-[10px] text-zinc-500 uppercase font-black tracking-widest">{candidate.role} • {candidate.faculty}</p>
-                        </div>
-                      </button>
+                        </button>
+                      </div>
                       {isLeading && (
                         <div className="bg-amber-500 text-zinc-950 text-[9px] sm:text-[10px] font-black px-2 sm:px-3 py-1 rounded-full flex items-center gap-1 sm:gap-2 shadow-lg shadow-amber-500/20 shrink-0">
                           <Crown size={10} className="sm:w-3 sm:h-3" />
@@ -410,43 +424,43 @@ export default function Dashboard({ config }: { config: any }) {
                           >
                             {candidate.voteCount.toLocaleString()}
                           </motion.p>
-                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Total Ballots</p>
+                          <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Total Ballots</p>
                         </div>
                         <div className="text-right">
-                          <p className={cn("text-2xl font-black", isLeading ? "text-amber-500" : isTie && idx <= 1 ? "text-blue-500" : "text-zinc-500")}>
+                          <p className={cn("text-2xl font-black", isLeading ? "text-amber-500" : isTie && idx <= 1 ? "text-blue-500" : "text-white/40")}>
                             {totalVotesCast > 0 ? ((candidate.voteCount / totalVotesCast) * 100).toFixed(1) : '0.0'}%
                           </p>
-                          <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Share</p>
+                          <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Share</p>
                         </div>
                       </div>
 
-                      <div className="h-2 w-full bg-zinc-800/50 rounded-full overflow-hidden p-[2px] border border-zinc-700/30">
+                      <div className="h-2 w-full bg-midnight-bg rounded-full overflow-hidden p-[2px] border border-midnight-border">
                         <motion.div 
                           initial={{ width: 0 }}
                           animate={{ width: `${totalVotesCast > 0 ? (candidate.voteCount / totalVotesCast) * 100 : 0}%` }}
                           className={cn(
                             "h-full rounded-full shadow-[0_0_10px_rgba(0,0,0,0.5)]", 
-                            isLeading ? "bg-gradient-to-r from-amber-600 to-amber-400" : isTie && idx <= 1 ? "bg-gradient-to-r from-blue-600 to-blue-400" : "bg-zinc-500"
+                            isLeading ? "bg-gradient-to-r from-amber-600 to-amber-400" : isTie && idx <= 1 ? "bg-gradient-to-r from-blue-600 to-blue-400" : "bg-white/20"
                           )}
                         />
                       </div>
                     </div>
 
                     {/* Bio & Manifesto */}
-                    <div className="pt-4 border-t border-zinc-800/50 space-y-4">
-                      <div className="bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/50">
+                    <div className="pt-4 border-t border-midnight-border space-y-4">
+                      <div className="bg-midnight-bg/50 p-3 rounded-xl border border-midnight-border">
                         <p className="text-[9px] font-black text-amber-500 uppercase tracking-[0.2em] mb-2 flex items-center gap-1.5">
                           <Info size={12} /> Candidate Biography
                         </p>
-                        <p className="text-xs text-zinc-300 leading-relaxed italic font-medium">
+                        <p className="text-xs text-white/60 leading-relaxed italic font-medium">
                           {candidate.bio || 'No biography provided.'}
                         </p>
                       </div>
-                      <div className="bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/50">
+                      <div className="bg-midnight-bg/50 p-3 rounded-xl border border-midnight-border">
                         <p className="text-[9px] font-black text-blue-500 uppercase tracking-[0.2em] mb-2 flex items-center gap-1.5">
                           <TrendingUp size={12} /> Election Manifesto
                         </p>
-                        <p className="text-xs text-zinc-200 font-bold leading-relaxed">
+                        <p className="text-xs text-white/80 font-bold leading-relaxed">
                           {candidate.manifesto || 'No manifesto summary available.'}
                         </p>
                       </div>
@@ -462,16 +476,16 @@ export default function Dashboard({ config }: { config: any }) {
         <div className="lg:col-span-7 space-y-8">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {/* Votes by Faculty Bar Chart */}
-            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative flex flex-col">
-              <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Votes by Faculty</h3>
+            <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem] h-[400px] relative flex flex-col">
+              <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50 mb-8">Votes by Faculty</h3>
               <div className="flex-1 w-full min-h-0">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={facultyData} layout="vertical">
                     <XAxis type="number" hide />
-                    <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} width={100} />
+                    <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 10, fontWeight: 700 }} width={100} />
                     <Tooltip 
                       cursor={{ fill: 'rgba(255,255,255,0.05)' }}
-                      contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px', fontSize: '12px' }}
+                      contentStyle={{ backgroundColor: '#14101A', border: '1px solid #2D2836', borderRadius: '12px', fontSize: '12px' }}
                     />
                     <Bar dataKey="votes" fill="#f59e0b" radius={[0, 8, 8, 0]} barSize={24}>
                       {facultyData.map((entry, index) => (
@@ -483,26 +497,26 @@ export default function Dashboard({ config }: { config: any }) {
               </div>
             </div>
 
-            <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] flex items-center justify-center">
+            <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem] h-[400px] flex items-center justify-center">
               <div className="text-center space-y-4">
                 <div className="w-16 h-16 bg-blue-500/10 border border-blue-500/20 rounded-2xl flex items-center justify-center text-blue-500 mx-auto">
                   <Activity size={32} />
                 </div>
                 <div>
-                  <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500">Analytics Engine</h3>
-                  <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mt-2">Processing Live Telemetry...</p>
+                  <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50">Analytics Engine</h3>
+                  <p className="text-[10px] font-bold text-white/20 uppercase tracking-widest mt-2">Processing Live Telemetry...</p>
                 </div>
               </div>
             </div>
           </div>
 
           {/* Live Activity Feed */}
-          <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem]">
-            <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 mb-6 flex items-center gap-3">
+          <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem]">
+            <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50 mb-6 flex items-center gap-3">
               <Activity size={18} className="text-blue-500" />
               Live Activity Feed
             </h3>
-            <div className="space-y-3 max-h-[300px] overflow-y-auto pr-4 scrollbar-thin scrollbar-thumb-zinc-800">
+            <div className="space-y-3 max-h-[300px] overflow-y-auto pr-4 scrollbar-thin scrollbar-thumb-midnight-border">
               <AnimatePresence initial={false}>
                 {liveFeed.map((item) => {
                   const candidate = candidates.find(c => c.id === item.candidateId);
@@ -515,9 +529,9 @@ export default function Dashboard({ config }: { config: any }) {
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
                       key={item.id}
-                      className="flex items-center gap-4 p-4 bg-zinc-950/40 border border-zinc-800/50 rounded-2xl group hover:border-blue-500/30 transition-all"
+                      className="flex items-center gap-4 p-4 bg-midnight-bg/40 border border-midnight-border/50 rounded-2xl group hover:border-blue-500/30 transition-all"
                     >
-                      <div className="flex items-center justify-center bg-zinc-900 px-3 py-2 rounded-xl border border-zinc-800">
+                      <div className="flex items-center justify-center bg-midnight-surface px-3 py-2 rounded-xl border border-midnight-border">
                         <span className="text-[10px] font-mono text-blue-500 font-black tracking-tighter leading-none">{time}</span>
                       </div>
                       
@@ -525,24 +539,24 @@ export default function Dashboard({ config }: { config: any }) {
                         <img 
                           src={candidate.imageUrl} 
                           alt={candidate.name} 
-                          className="w-8 h-8 rounded-lg object-cover border border-zinc-800 shrink-0" 
+                          className="w-8 h-8 rounded-lg object-cover border border-midnight-border shrink-0" 
                           referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-500 shrink-0">
+                        <div className="w-8 h-8 rounded-lg bg-midnight-surface border border-midnight-border flex items-center justify-center text-white/40 shrink-0">
                           <User size={14} />
                         </div>
                       )}
                       
                       <div className="flex-1 min-w-0">
-                        <p className="text-[11px] font-bold text-zinc-300 truncate">
+                        <p className="text-[11px] font-bold text-white/60 truncate">
                           Ballot cast for <span className="text-white">{candidate?.name || 'Candidate'}</span>
                         </p>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[9px] text-zinc-500 uppercase font-black tracking-widest truncate">
+                          <span className="text-[9px] text-white/40 uppercase font-black tracking-widest truncate">
                             {item.faculty}
                           </span>
-                          <span className="w-1 h-1 rounded-full bg-zinc-800" />
+                          <span className="w-1 h-1 rounded-full bg-midnight-border" />
                           <span className="text-[9px] text-amber-500/80 uppercase font-black tracking-widest truncate">
                             {candidate?.role || 'Position'}
                           </span>
@@ -553,8 +567,8 @@ export default function Dashboard({ config }: { config: any }) {
                 })}
               </AnimatePresence>
               {liveFeed.length === 0 && (
-                <div className="text-center py-12 border border-dashed border-zinc-800 rounded-3xl">
-                  <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">Awaiting first ballots...</p>
+                <div className="text-center py-12 border border-dashed border-midnight-border rounded-3xl">
+                  <p className="text-xs text-white/40 font-bold uppercase tracking-widest">Awaiting first ballots...</p>
                 </div>
               )}
             </div>
@@ -563,18 +577,18 @@ export default function Dashboard({ config }: { config: any }) {
       </div>
 
       {/* Footer: Hourly Voting Pace */}
-      <div className="bg-zinc-900/30 border border-zinc-800 p-8 rounded-[2rem] h-[400px] relative flex flex-col">
+      <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem] h-[400px] relative flex flex-col">
         <div className="flex justify-between items-center mb-8">
-          <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500">Hourly Voting Pace (Heartbeat)</h3>
+          <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50">Hourly Voting Pace (Heartbeat)</h3>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <div className="w-3 h-3 rounded-full bg-amber-500" />
-              <span className="text-[10px] font-bold text-zinc-400 uppercase">Today</span>
+              <span className="text-[10px] font-bold text-white/40 uppercase">Today</span>
             </div>
           </div>
         </div>
         <div className="flex-1 w-full min-h-0">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
             <AreaChart data={paceData}>
               <defs>
                 <linearGradient id="colorVotes" x1="0" y1="0" x2="0" y2="1">
@@ -582,11 +596,11 @@ export default function Dashboard({ config }: { config: any }) {
                   <stop offset="95%" stopColor="#f59e0b" stopOpacity={0}/>
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 10, fontWeight: 700 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#2D2836" vertical={false} />
+              <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 10, fontWeight: 700 }} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fill: 'rgba(255,255,255,0.4)', fontSize: 10, fontWeight: 700 }} />
               <Tooltip 
-                contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '12px' }}
+                contentStyle={{ backgroundColor: '#14101A', border: '1px solid #2D2836', borderRadius: '12px' }}
               />
               <Area 
                 type="monotone" 
@@ -605,25 +619,34 @@ export default function Dashboard({ config }: { config: any }) {
       {/* Candidate Detail Modal */}
       <AnimatePresence>
         {selectedCandidateForModal && (
-          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-zinc-950/90 backdrop-blur-md">
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-midnight-bg/90 backdrop-blur-md">
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-zinc-900 border border-zinc-800 w-full max-w-2xl max-h-[90vh] rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl"
+              className="bg-midnight-surface border border-midnight-border w-full max-w-2xl max-h-[90vh] rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl"
             >
-              <div className="p-8 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+              <div className="p-8 border-b border-midnight-border flex justify-between items-center bg-midnight-surface/50">
                 <div className="flex items-center gap-6">
                   {selectedCandidateForModal.imageUrl ? (
-                    <img 
-                      src={selectedCandidateForModal.imageUrl} 
-                      alt={selectedCandidateForModal.name} 
-                      className="w-16 h-16 rounded-2xl object-cover border border-zinc-800" 
-                      referrerPolicy="no-referrer"
-                    />
+                    <button
+                      type="button"
+                      onClick={() => setZoomedCandidate(selectedCandidateForModal)}
+                      className="relative group/img shrink-0"
+                    >
+                      <img 
+                        src={selectedCandidateForModal.imageUrl} 
+                        alt={selectedCandidateForModal.name} 
+                        className="w-20 h-20 rounded-2xl object-cover border-2 border-midnight-border group-hover/img:border-amber-500 transition-all" 
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity rounded-2xl flex items-center justify-center">
+                        <span className="text-[10px] font-black text-white uppercase tracking-widest">Zoom</span>
+                      </div>
+                    </button>
                   ) : (
-                    <div className="w-16 h-16 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-400">
-                      <User size={28} />
+                    <div className="w-20 h-20 rounded-2xl bg-midnight-surface border border-midnight-border flex items-center justify-center text-white/40">
+                      <User size={32} />
                     </div>
                   )}
                   <div>
@@ -633,7 +656,7 @@ export default function Dashboard({ config }: { config: any }) {
                 </div>
                 <button 
                   onClick={() => setSelectedCandidateForModal(null)}
-                  className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-full transition-all"
+                  className="p-2 text-white/40 hover:text-white hover:bg-white/5 rounded-full transition-all"
                 >
                   <X size={24} />
                 </button>
@@ -641,11 +664,11 @@ export default function Dashboard({ config }: { config: any }) {
 
               <div className="flex-1 overflow-y-auto p-8 space-y-10">
                 <section className="space-y-4">
-                  <h3 className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500 flex items-center gap-3">
+                  <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/40 flex items-center gap-3">
                     <Info size={16} className="text-amber-500" />
                     Full Biography
                   </h3>
-                  <div className="bg-zinc-950/50 p-6 rounded-3xl border border-zinc-800 leading-relaxed text-zinc-300">
+                  <div className="bg-midnight-bg/50 p-6 rounded-3xl border border-midnight-border leading-relaxed text-white/60">
                     {selectedCandidateForModal.bio || 'No biography provided for this candidate.'}
                   </div>
                 </section>
@@ -655,31 +678,77 @@ export default function Dashboard({ config }: { config: any }) {
                     <TrendingUp size={16} className="text-blue-500" />
                     Election Manifesto
                   </h3>
-                  <div className="bg-zinc-950/50 p-6 rounded-3xl border border-zinc-800 leading-relaxed text-zinc-200 font-bold whitespace-pre-wrap">
+                  <div className="bg-midnight-bg/50 p-6 rounded-3xl border border-midnight-border leading-relaxed text-zinc-200 font-bold whitespace-pre-wrap">
                     {selectedCandidateForModal.manifesto || 'No manifesto summary available for this candidate.'}
                   </div>
                 </section>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl text-center">
+                  <div className="bg-midnight-surface border border-midnight-border p-6 rounded-3xl text-center">
                     <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Total Votes</p>
                     <p className="text-2xl font-mono font-black text-white">{selectedCandidateForModal.voteCount.toLocaleString()}</p>
                   </div>
-                  <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl text-center">
+                  <div className="bg-midnight-surface border border-midnight-border p-6 rounded-3xl text-center">
                     <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-1">Vote Share</p>
                     <p className="text-2xl font-mono font-black text-amber-500">{((selectedCandidateForModal.voteCount / totalVotesCast) * 100).toFixed(1)}%</p>
                   </div>
                 </div>
               </div>
 
-              <div className="p-6 bg-zinc-950/50 border-t border-zinc-800">
+              <div className="p-6 bg-midnight-bg/50 border-t border-midnight-border">
                 <button 
                   onClick={() => setSelectedCandidateForModal(null)}
-                  className="w-full py-4 bg-zinc-800 hover:bg-zinc-700 text-white font-black rounded-2xl transition-all uppercase tracking-widest text-xs"
+                  className="w-full py-4 bg-midnight-surface hover:bg-white/5 text-white font-black rounded-2xl transition-all uppercase tracking-widest text-xs"
                 >
                   Close Profile
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Image Zoom Modal */}
+      <AnimatePresence>
+        {zoomedCandidate && (
+          <div 
+            className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl"
+            onClick={() => setZoomedCandidate(null)}
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="relative max-w-lg w-full aspect-[4/5] bg-midnight-surface rounded-[3rem] overflow-hidden border-4 border-white/10 shadow-[0_0_100px_rgba(0,0,0,0.8)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img 
+                src={zoomedCandidate.imageUrl} 
+                alt={zoomedCandidate.name} 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+              
+              {/* Passport Overlay Info */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/60 to-transparent p-10 pt-20">
+                <div className="flex justify-between items-end">
+                  <div>
+                    <p className="text-[10px] font-black text-amber-500 uppercase tracking-[0.4em] mb-2">Official Candidate Portrait</p>
+                    <h3 className="text-3xl font-black text-white uppercase tracking-tighter leading-none mb-2">{zoomedCandidate.name}</h3>
+                    <p className="text-sm font-bold text-zinc-400 uppercase tracking-widest">{zoomedCandidate.role} • {zoomedCandidate.faculty}</p>
+                  </div>
+                  <div className="w-16 h-16 border-2 border-white/20 rounded-2xl flex items-center justify-center text-white/20">
+                    <Crown size={32} />
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setZoomedCandidate(null)}
+                className="absolute top-6 right-6 w-12 h-12 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all border border-white/10"
+              >
+                <X size={24} />
+              </button>
             </motion.div>
           </div>
         )}
@@ -698,7 +767,7 @@ function SummaryCard({ icon, image, label, value, subValue, trend, color, progre
 
   return (
     <div className={cn(
-      "bg-zinc-900/30 border border-zinc-800 p-6 rounded-[2rem] backdrop-blur-sm relative overflow-hidden group hover:border-zinc-700 transition-all duration-500",
+      "bg-midnight-surface/30 border border-midnight-border p-6 rounded-[2rem] backdrop-blur-sm relative overflow-hidden group hover:border-white/10 transition-all duration-500",
       warning && "border-red-500/50 shadow-[0_0_20px_-5px_rgba(239,68,68,0.3)]"
     )}>
       <div className={cn("w-12 h-12 rounded-2xl flex items-center justify-center mb-6 border shadow-inner group-hover:scale-110 transition-transform duration-500 overflow-hidden", colorClasses[color])}>
@@ -709,7 +778,7 @@ function SummaryCard({ icon, image, label, value, subValue, trend, color, progre
         )}
       </div>
       
-      <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-black mb-1">{label}</p>
+      <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-black mb-1">{label}</p>
       <div className="flex items-baseline gap-3 mb-4">
         <h4 className="text-3xl font-black font-mono tracking-tighter text-white tabular-nums">{value}</h4>
         {trend && (
@@ -721,13 +790,13 @@ function SummaryCard({ icon, image, label, value, subValue, trend, color, progre
 
       {progress !== undefined ? (
         <div className="space-y-2">
-          <div className="h-1.5 w-full bg-zinc-800 rounded-full overflow-hidden">
-            <div className={cn("h-full rounded-full", color === 'amber' ? "bg-amber-500" : "bg-zinc-500")} style={{ width: `${progress}%` }} />
+          <div className="h-1.5 w-full bg-midnight-bg rounded-full overflow-hidden">
+            <div className={cn("h-full rounded-full", color === 'amber' ? "bg-amber-500" : "bg-white/20")} style={{ width: `${progress}%` }} />
           </div>
-          <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Progress to target</p>
+          <p className="text-[9px] font-bold text-white/40 uppercase tracking-widest">Progress to target</p>
         </div>
       ) : (
-        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{subValue}</p>
+        <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">{subValue}</p>
       )}
 
       {warning && (

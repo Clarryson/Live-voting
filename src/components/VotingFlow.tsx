@@ -50,11 +50,12 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   }
-  console.warn('Firestore Error (Soft Handled): ', JSON.stringify(errInfo, null, 2));
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 import { motion, AnimatePresence } from 'motion/react';
-import { Shield, Mail, CheckCircle2, AlertCircle, ArrowRight, Loader2, UserCheck, Vote } from 'lucide-react';
+import { Shield, Mail, CheckCircle2, AlertCircle, ArrowRight, Loader2, UserCheck, Vote, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function VotingFlow({ config }: { config: any }) {
@@ -64,6 +65,7 @@ export default function VotingFlow({ config }: { config: any }) {
   const [voterEmailInput, setVoterEmailInput] = useState('');
   const [candidates, setCandidates] = useState<any[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+  const [zoomedCandidate, setZoomedCandidate] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
@@ -84,43 +86,27 @@ export default function VotingFlow({ config }: { config: any }) {
   // Sync offline votes on mount or when online
   useEffect(() => {
     if (!isOffline) {
-      const offlineVotesStr = localStorage.getItem('pending_votes');
-      if (offlineVotesStr) {
-        let votes = [];
-        try {
-          votes = JSON.parse(offlineVotesStr);
-        } catch(e) {}
-        if (Array.isArray(votes) && votes.length > 0) {
-          syncOfflineQueue(votes);
-        }
+      const offlineVote = localStorage.getItem('pending_vote');
+      if (offlineVote) {
+        const voteData = JSON.parse(offlineVote);
+        syncVote(voteData);
       }
     }
   }, [isOffline]);
 
-  const syncOfflineQueue = async (votes: any[]) => {
-    let unSynced = [];
-    for (const voteData of votes) {
-      try {
-        const res = await fetch('/api/cast-vote', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(voteData),
-        });
-        if (!res.ok) throw new Error('Sync failed');
-      } catch (err) {
-        console.error('Failed to sync offline vote:', err);
-        unSynced.push(voteData);
+  const syncVote = async (voteData: any) => {
+    try {
+      const res = await fetch('/api/cast-vote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(voteData),
+      });
+      if (res.ok) {
+        localStorage.removeItem('pending_vote');
+        setStep('success');
       }
-    }
-    
-    if (unSynced.length === 0) {
-      localStorage.removeItem('pending_votes');
-    } else {
-      localStorage.setItem('pending_votes', JSON.stringify(unSynced));
-    }
-    
-    if (votes.length > 0 && unSynced.length < votes.length) {
-      setStep('success');
+    } catch (err) {
+      console.error('Failed to sync offline vote:', err);
     }
   };
 
@@ -173,13 +159,7 @@ export default function VotingFlow({ config }: { config: any }) {
     const voteData = { admissionNumber, candidateId: selectedCandidate };
     
     if (isOffline) {
-      const existing = localStorage.getItem('pending_votes');
-      let queue = [];
-      if (existing) {
-        try { queue = JSON.parse(existing); } catch(e) {}
-      }
-      queue.push(voteData);
-      localStorage.setItem('pending_votes', JSON.stringify(queue));
+      localStorage.setItem('pending_vote', JSON.stringify(voteData));
       setStep('success');
       return;
     }
@@ -216,7 +196,7 @@ export default function VotingFlow({ config }: { config: any }) {
   if ((!isElectionLive || isBeforeOpening || isAfterClosing) && step !== 'success') {
     return (
       <div className="max-w-md mx-auto text-center py-20 px-6">
-        <div className="w-24 h-24 bg-zinc-900 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-zinc-800 shadow-2xl relative overflow-hidden group">
+        <div className="w-24 h-24 bg-midnight-surface rounded-3xl flex items-center justify-center mx-auto mb-8 border border-midnight-border shadow-2xl relative overflow-hidden group">
           <div className="absolute inset-0 bg-amber-500/5 group-hover:bg-amber-500/10 transition-colors" />
           <Clock className={cn("text-zinc-500 relative z-10 transition-transform duration-500", isBeforeOpening && "animate-pulse text-amber-500")} size={48} />
         </div>
@@ -236,7 +216,7 @@ export default function VotingFlow({ config }: { config: any }) {
         </p>
 
         <div className="grid grid-cols-1 gap-4">
-          <div className="p-6 bg-zinc-900/50 border border-zinc-800 rounded-2xl text-left">
+          <div className="p-6 bg-midnight-surface/50 border border-midnight-border rounded-2xl text-left">
             <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-3">Election Status Report</p>
             <div className="space-y-3">
               <div className="flex justify-between items-center">
@@ -265,7 +245,7 @@ export default function VotingFlow({ config }: { config: any }) {
           
           <button 
             onClick={() => window.location.reload()}
-            className="w-full py-4 bg-zinc-900 border border-zinc-800 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-zinc-800 transition-all"
+            className="w-full py-4 bg-midnight-surface border border-midnight-border rounded-xl text-xs font-black uppercase tracking-widest hover:bg-white/5 transition-all"
           >
             Refresh Status
           </button>
@@ -277,16 +257,16 @@ export default function VotingFlow({ config }: { config: any }) {
   return (
     <div className="max-w-2xl mx-auto relative">
       {/* Election Branding */}
-      <div className="flex flex-col items-center mb-8 text-center">
+      <div className="flex flex-col items-center mb-12 text-center">
         {config?.bannerUrl && (
           <img 
             src={config.bannerUrl} 
             alt="Election Banner" 
-            className="w-24 h-24 sm:w-32 sm:h-32 rounded-3xl object-cover border-2 border-zinc-800 shadow-2xl mb-4" 
+            className="w-32 h-32 sm:w-48 sm:h-48 rounded-[2.5rem] object-cover border-4 border-midnight-border shadow-[0_0_50px_rgba(0,0,0,0.5)] mb-6" 
             referrerPolicy="no-referrer"
           />
         )}
-        <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-white px-4">
+        <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-tight text-white px-4 leading-tight">
           {config?.electionName || 'Mulembe Nation University Guild Elections 2025'}
         </h1>
       </div>
@@ -301,7 +281,7 @@ export default function VotingFlow({ config }: { config: any }) {
             className="absolute -top-12 left-0 right-0 flex justify-center z-50"
           >
             <div className="bg-amber-500 text-zinc-950 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-lg shadow-amber-500/20">
-              <div className="w-2 h-2 rounded-full bg-zinc-950 animate-pulse" />
+              <div className="w-2 h-2 rounded-full bg-midnight-bg animate-pulse" />
               Offline Mode Active – Votes will sync on reconnect
             </div>
           </motion.div>
@@ -314,7 +294,7 @@ export default function VotingFlow({ config }: { config: any }) {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="bg-zinc-900/50 border border-zinc-800 p-8 rounded-3xl backdrop-blur-sm"
+            className="bg-midnight-surface/50 border border-midnight-border p-8 rounded-3xl backdrop-blur-sm"
           >
             <div className="flex items-center gap-4 mb-8">
               <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-2xl flex items-center justify-center text-amber-500">
@@ -332,7 +312,7 @@ export default function VotingFlow({ config }: { config: any }) {
                   <label className="text-xs font-bold uppercase tracking-widest text-zinc-500">
                     {idMode === 'admission' ? 'Admission Number' : 'Student Email'}
                   </label>
-                  <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+                  <div className="flex bg-midnight-bg p-1 rounded-lg border border-midnight-border">
                     <button 
                       type="button"
                       onClick={() => setIdMode('admission')}
@@ -362,7 +342,7 @@ export default function VotingFlow({ config }: { config: any }) {
                     placeholder="e.g. BIT/001/2021"
                     value={admissionNumber}
                     onChange={(e) => setAdmissionNumber(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
+                    className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
                   />
                 ) : (
                   <input 
@@ -371,7 +351,7 @@ export default function VotingFlow({ config }: { config: any }) {
                     placeholder="e.g. student@mulembe.ac.ke"
                     value={voterEmailInput}
                     onChange={(e) => setVoterEmailInput(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
+                    className="w-full bg-midnight-bg border border-midnight-border rounded-xl px-4 py-3 focus:outline-none focus:border-amber-500 transition-colors font-mono"
                   />
                 )}
               </div>
@@ -402,7 +382,7 @@ export default function VotingFlow({ config }: { config: any }) {
             exit={{ opacity: 0, y: -20 }}
             className="space-y-6"
           >
-            <div className="bg-zinc-900/50 border border-zinc-800 p-6 rounded-3xl backdrop-blur-sm flex items-center justify-between">
+            <div className="bg-midnight-surface/50 border border-midnight-border p-6 rounded-3xl backdrop-blur-sm flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center text-green-500">
                   <UserCheck size={20} />
@@ -418,43 +398,60 @@ export default function VotingFlow({ config }: { config: any }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-6">
               {candidates.map((candidate) => (
                 <button
                   key={candidate.id}
                   onClick={() => setSelectedCandidate(candidate.id)}
                   className={cn(
-                    "p-6 rounded-3xl border text-left transition-all relative overflow-hidden group",
+                    "p-6 sm:p-8 rounded-[2.5rem] border text-left transition-all relative overflow-hidden group",
                     selectedCandidate === candidate.id 
                       ? "bg-amber-500/20 border-amber-500 shadow-lg shadow-amber-500/10" 
-                      : "bg-zinc-900/50 border-zinc-800 hover:border-zinc-700"
+                      : "bg-midnight-surface/50 border-midnight-border hover:border-white/10"
                   )}
                 >
-                  <div className="flex items-center gap-4 mb-4">
+                  <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 sm:gap-8">
                     {candidate.imageUrl ? (
-                      <img 
-                        src={candidate.imageUrl} 
-                        alt={candidate.name} 
-                        className="w-16 h-16 rounded-2xl object-cover border border-zinc-800" 
-                        referrerPolicy="no-referrer"
-                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setZoomedCandidate(candidate);
+                        }}
+                        className="relative group/img shrink-0"
+                      >
+                        <img 
+                          src={candidate.imageUrl} 
+                          alt={candidate.name} 
+                          className="w-32 h-32 sm:w-40 sm:h-40 rounded-[2rem] object-cover border-4 border-midnight-border group-hover/img:border-amber-500 transition-all shadow-2xl" 
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity rounded-[2rem] flex items-center justify-center">
+                          <span className="text-xs font-black text-white uppercase tracking-widest">View Portrait</span>
+                        </div>
+                      </button>
                     ) : (
-                      <div className="w-16 h-16 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center text-2xl font-bold">
+                      <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-[2rem] bg-midnight-surface border-2 border-midnight-border flex items-center justify-center text-5xl font-black shrink-0 text-zinc-700">
                         {candidate.name[0]}
                       </div>
                     )}
-                    <div>
-                      <h3 className="font-bold text-lg">{candidate.name}</h3>
-                      <p className="text-xs text-zinc-500 font-bold uppercase tracking-widest">{candidate.role} • {candidate.faculty}</p>
+                    <div className="flex-1 text-center sm:text-left pt-2">
+                      <h3 className="text-2xl sm:text-3xl font-black text-white mb-2">{candidate.name}</h3>
+                      <div className="space-y-1">
+                        <p className="text-xs font-black text-amber-500 uppercase tracking-[0.2em]">{candidate.role}</p>
+                        <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">{candidate.faculty}</p>
+                      </div>
+                      
+                      <div className="mt-6 flex items-center justify-center sm:justify-start gap-2 text-xs font-black text-zinc-400 uppercase tracking-widest">
+                        <Vote size={16} className="text-amber-500" />
+                        <span>Select this candidate</span>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 text-xs font-bold text-zinc-400">
-                    <Vote size={14} />
-                    <span>Select Candidate</span>
-                  </div>
+                  
                   {selectedCandidate === candidate.id && (
-                    <div className="absolute top-4 right-4 text-amber-500">
-                      <CheckCircle2 size={24} />
+                    <div className="absolute top-6 right-6 text-amber-500">
+                      <CheckCircle2 size={32} />
                     </div>
                   )}
                 </button>
@@ -492,7 +489,7 @@ export default function VotingFlow({ config }: { config: any }) {
             <p className="text-zinc-500 mb-8">Thank you for participating in the {config?.electionName || 'Mulembe Nation University Guild Elections'}. Your vote has been recorded anonymously.</p>
             <button 
               onClick={() => window.location.reload()}
-              className="px-8 py-3 bg-zinc-900 border border-zinc-800 rounded-xl font-bold hover:bg-zinc-800 transition-colors"
+              className="px-8 py-3 bg-midnight-surface border border-midnight-border rounded-xl font-bold hover:bg-white/5 transition-colors"
             >
               Return Home
             </button>
@@ -503,12 +500,12 @@ export default function VotingFlow({ config }: { config: any }) {
       {/* Registration Error Modal */}
       <AnimatePresence>
         {showRegistrationError && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-zinc-950/90 backdrop-blur-md">
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-midnight-bg/90 backdrop-blur-md">
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-zinc-900 border border-zinc-800 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl text-center"
+              className="bg-midnight-surface border border-midnight-border w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl text-center"
             >
               <div className="w-20 h-20 bg-red-500/10 border border-red-500/20 rounded-3xl flex items-center justify-center mx-auto mb-6 text-red-500">
                 <AlertCircle size={40} />
@@ -525,7 +522,7 @@ export default function VotingFlow({ config }: { config: any }) {
               <div className="space-y-3">
                 <button 
                   onClick={() => setShowRegistrationError(false)}
-                  className="w-full py-4 bg-zinc-100 text-zinc-950 font-black rounded-2xl hover:bg-white transition-all uppercase tracking-widest text-xs"
+                  className="w-full py-4 bg-white text-midnight-bg font-black rounded-2xl hover:bg-white/90 transition-all uppercase tracking-widest text-xs"
                 >
                   Understood
                 </button>
@@ -533,6 +530,52 @@ export default function VotingFlow({ config }: { config: any }) {
                   Reference ID: {admissionNumber}
                 </p>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Image Zoom Modal */}
+      <AnimatePresence>
+        {zoomedCandidate && (
+          <div 
+            className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/95 backdrop-blur-xl"
+            onClick={() => setZoomedCandidate(null)}
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="relative max-w-lg w-full aspect-[4/5] bg-midnight-surface rounded-[3rem] overflow-hidden border-4 border-white/10 shadow-[0_0_100px_rgba(0,0,0,0.8)]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <img 
+                src={zoomedCandidate.imageUrl} 
+                alt={zoomedCandidate.name} 
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+              
+              {/* Passport Overlay Info */}
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/60 to-transparent p-10 pt-20">
+                <div className="flex justify-between items-end">
+                  <div>
+                    <p className="text-[10px] font-black text-amber-500 uppercase tracking-[0.4em] mb-2">Official Candidate Portrait</p>
+                    <h3 className="text-3xl font-black text-white uppercase tracking-tighter leading-none mb-2">{zoomedCandidate.name}</h3>
+                    <p className="text-sm font-bold text-zinc-400 uppercase tracking-widest">{zoomedCandidate.role} • {zoomedCandidate.faculty}</p>
+                  </div>
+                  <div className="w-16 h-16 border-2 border-white/20 rounded-2xl flex items-center justify-center text-white/20">
+                    <Shield size={32} />
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setZoomedCandidate(null)}
+                className="absolute top-6 right-6 w-12 h-12 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white transition-all border border-white/10"
+              >
+                <X size={24} />
+              </button>
             </motion.div>
           </div>
         )}
