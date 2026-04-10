@@ -58,7 +58,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, AreaChart, Area 
 } from 'recharts';
-import { Users, User, Vote, Percent, Target, Crown, Activity, Clock, TrendingUp, Info, X, AlertTriangle, Bell } from 'lucide-react';
+import { Users, User, Vote, Percent, Target, Crown, Activity, Clock, TrendingUp, Info, X, AlertTriangle, Bell, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { useRef } from 'react';
@@ -77,6 +77,7 @@ export default function Dashboard({ config }: { config: any }) {
   const [selectedCandidateForModal, setSelectedCandidateForModal] = useState<any | null>(null);
   const [zoomedCandidate, setZoomedCandidate] = useState<any | null>(null);
   const [statusAlert, setStatusAlert] = useState<{ status: string; prev: string } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const prevStatusRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -239,20 +240,25 @@ export default function Dashboard({ config }: { config: any }) {
         <div className="space-y-2 w-full lg:w-auto">
           <div className="flex flex-wrap items-center gap-3">
             <div className={cn(
-              "flex items-center gap-2 px-3 py-1 border rounded-full",
-              config?.status === 'live' ? "bg-green-500/10 border-green-500/20 text-green-500" : 
-              config?.status === 'paused' ? "bg-amber-500/10 border-amber-500/20 text-amber-500" :
-              "bg-red-500/10 border-red-500/20 text-red-500"
+              "flex items-center gap-2 px-3 py-1 border rounded-full transition-all duration-500",
+              config?.status === 'live' ? "bg-green-500/10 border-green-500/20 text-green-500 shadow-[0_0_15px_rgba(34,197,94,0.2)]" : 
+              config?.status === 'paused' ? "bg-amber-500/10 border-amber-500/20 text-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.2)]" :
+              "bg-red-500/10 border-red-500/20 text-red-500 shadow-[0_0_15px_rgba(239,68,68,0.2)]"
             )}>
               <span className="relative flex h-2 w-2">
                 <span className={cn("animate-ping absolute inline-flex h-full w-full rounded-full opacity-75", config?.status === 'live' ? "bg-green-400" : config?.status === 'paused' ? "bg-amber-400" : "bg-red-400")}></span>
                 <span className={cn("relative inline-flex rounded-full h-2 w-2", config?.status === 'live' ? "bg-green-500" : config?.status === 'paused' ? "bg-amber-500" : "bg-red-500")}></span>
               </span>
-              <span className="text-[10px] font-black tracking-[0.2em] uppercase">
+              <motion.span 
+                key={config?.status}
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="text-[10px] font-black tracking-[0.2em] uppercase"
+              >
                 {config?.status === 'live' ? 'LIVE – ELECTION IN PROGRESS' : 
                  config?.status === 'paused' ? 'PAUSED – MAINTENANCE' : 
                  'ENDED – FINALIZING RESULTS'}
-              </span>
+              </motion.span>
             </div>
             <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 text-blue-500 rounded-full">
               <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
@@ -327,16 +333,32 @@ export default function Dashboard({ config }: { config: any }) {
         {/* Candidate Standings (Left Column) */}
         <div className="lg:col-span-5 space-y-6">
           <div className="bg-midnight-surface/30 border border-midnight-border p-8 rounded-[2rem] backdrop-blur-sm">
-            <div className="flex justify-between items-center mb-8">
-              <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50 flex items-center gap-3">
-                <Crown size={18} className="text-amber-500" />
-                Guild Chairperson Standings
-              </h3>
-              <div className="px-3 py-1 bg-midnight-surface rounded-lg text-[10px] font-bold text-white/40">FILTER: CHAIRPERSON</div>
+            <div className="space-y-4 mb-8">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xs font-black uppercase tracking-[0.3em] text-white/50 flex items-center gap-3">
+                  <Crown size={18} className="text-amber-500" />
+                  Guild Chairperson Standings
+                </h3>
+                <div className="px-3 py-1 bg-midnight-surface rounded-lg text-[10px] font-bold text-white/40">FILTER: CHAIRPERSON</div>
+              </div>
+
+              <div className="relative group">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-amber-500 transition-colors" size={16} />
+                <input 
+                  type="text"
+                  placeholder="Search candidates..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-midnight-bg border border-midnight-border rounded-2xl py-3 pl-12 pr-4 text-xs focus:outline-none focus:border-amber-500 transition-all"
+                />
+              </div>
             </div>
             
             <div className="space-y-6">
-              {candidates.filter(c => c.role === 'Chairperson').map((candidate, idx, filteredArr) => {
+              {candidates
+                .filter(c => c.role === 'Chairperson')
+                .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map((candidate, idx, filteredArr) => {
                 const isTie = idx === 0 && filteredArr.length > 1 && filteredArr[0].voteCount === filteredArr[1].voteCount && filteredArr[0].voteCount > 0;
                 const isLeading = idx === 0 && !isTie;
 

@@ -55,7 +55,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 import { motion, AnimatePresence } from 'motion/react';
-import { Shield, Mail, CheckCircle2, AlertCircle, ArrowRight, Loader2, UserCheck, Vote, X } from 'lucide-react';
+import { Shield, Mail, CheckCircle2, AlertCircle, ArrowRight, Loader2, UserCheck, Vote, X, Search } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export default function VotingFlow({ config }: { config: any }) {
@@ -66,11 +66,14 @@ export default function VotingFlow({ config }: { config: any }) {
   const [candidates, setCandidates] = useState<any[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
   const [zoomedCandidate, setZoomedCandidate] = useState<any | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [showRegistrationError, setShowRegistrationError] = useState(false);
+  const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [isVoteCommitted, setIsVoteCommitted] = useState(false);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -103,7 +106,11 @@ export default function VotingFlow({ config }: { config: any }) {
       });
       if (res.ok) {
         localStorage.removeItem('pending_vote');
-        setStep('success');
+        setIsVoteCommitted(true);
+        setShowSuccessToast(true);
+        setTimeout(() => {
+          setStep('success');
+        }, 3000);
       }
     } catch (err) {
       console.error('Failed to sync offline vote:', err);
@@ -160,7 +167,11 @@ export default function VotingFlow({ config }: { config: any }) {
     
     if (isOffline) {
       localStorage.setItem('pending_vote', JSON.stringify(voteData));
-      setStep('success');
+      setIsVoteCommitted(true);
+      setShowSuccessToast(true);
+      setTimeout(() => {
+        setStep('success');
+      }, 3000);
       return;
     }
 
@@ -175,7 +186,11 @@ export default function VotingFlow({ config }: { config: any }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       
-      setStep('success');
+      setIsVoteCommitted(true);
+      setShowSuccessToast(true);
+      setTimeout(() => {
+        setStep('success');
+      }, 3000);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -380,9 +395,30 @@ export default function VotingFlow({ config }: { config: any }) {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="space-y-6"
+            className="space-y-6 relative"
           >
-            <div className="bg-midnight-surface/50 border border-midnight-border p-6 rounded-3xl backdrop-blur-sm flex items-center justify-between">
+            <AnimatePresence>
+              {showSuccessToast && (
+                <motion.div
+                  initial={{ opacity: 0, y: -50 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -50 }}
+                  className="fixed top-24 left-1/2 -translate-x-1/2 z-[150] w-full max-w-md px-4"
+                >
+                  <div className="bg-green-600 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-white/20 backdrop-blur-md">
+                    <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                      <CheckCircle2 size={24} />
+                    </div>
+                    <div>
+                      <p className="font-black uppercase tracking-widest text-[10px] opacity-80">Vote Confirmed</p>
+                      <p className="text-sm font-bold">Your ballot has been cast successfully!</p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className={cn("bg-midnight-surface/50 border border-midnight-border p-6 rounded-3xl backdrop-blur-sm flex items-center justify-between transition-opacity", isVoteCommitted && "opacity-50")}>
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 bg-green-500/10 border border-green-500/20 rounded-xl flex items-center justify-center text-green-500">
                   <UserCheck size={20} />
@@ -398,16 +434,33 @@ export default function VotingFlow({ config }: { config: any }) {
               </div>
             </div>
 
+            <div className={cn("relative group transition-opacity", isVoteCommitted && "opacity-50 pointer-events-none")}>
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-amber-500 transition-colors" size={18} />
+              <input 
+                type="text"
+                disabled={isVoteCommitted}
+                placeholder="Search for your candidate..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-midnight-surface/50 border border-midnight-border rounded-3xl py-4 pl-12 pr-4 text-sm focus:outline-none focus:border-amber-500 transition-all backdrop-blur-sm"
+              />
+            </div>
+
             <div className="grid grid-cols-1 gap-6">
-              {candidates.map((candidate) => (
+              {candidates
+                .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map((candidate) => (
                 <button
                   key={candidate.id}
-                  onClick={() => setSelectedCandidate(candidate.id)}
+                  onClick={() => !isVoteCommitted && setSelectedCandidate(candidate.id)}
+                  disabled={isVoteCommitted}
                   className={cn(
                     "p-6 sm:p-8 rounded-[2.5rem] border text-left transition-all relative overflow-hidden group",
                     selectedCandidate === candidate.id 
                       ? "bg-amber-500/20 border-amber-500 shadow-lg shadow-amber-500/10" 
-                      : "bg-midnight-surface/50 border-midnight-border hover:border-white/10"
+                      : "bg-midnight-surface/50 border-midnight-border hover:border-white/10",
+                    isVoteCommitted && selectedCandidate !== candidate.id && "opacity-30 grayscale",
+                    isVoteCommitted && selectedCandidate === candidate.id && "border-green-500 bg-green-500/10"
                   )}
                 >
                   <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 sm:gap-8">
@@ -467,10 +520,15 @@ export default function VotingFlow({ config }: { config: any }) {
 
             <button 
               onClick={handleCastVote}
-              disabled={!selectedCandidate || loading}
-              className="w-full bg-amber-500 text-zinc-950 font-bold py-5 rounded-3xl flex items-center justify-center gap-3 hover:bg-amber-400 transition-all disabled:opacity-50 shadow-xl shadow-amber-500/20"
+              disabled={!selectedCandidate || loading || isVoteCommitted}
+              className={cn(
+                "w-full font-bold py-5 rounded-3xl flex items-center justify-center gap-3 transition-all shadow-xl",
+                isVoteCommitted 
+                  ? "bg-green-500 text-white shadow-green-500/20" 
+                  : "bg-amber-500 text-zinc-950 hover:bg-amber-400 shadow-amber-500/20"
+              )}
             >
-              {loading ? <Loader2 className="animate-spin" /> : <>Cast Anonymous Ballot <CheckCircle2 size={20} /></>}
+              {loading ? <Loader2 className="animate-spin" /> : isVoteCommitted ? <><CheckCircle2 size={20} /> Vote Recorded</> : <>Cast Anonymous Ballot <CheckCircle2 size={20} /></>}
             </button>
           </motion.div>
         )}

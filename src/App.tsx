@@ -533,12 +533,22 @@ export default function App() {
             </h1>
             {isAdmin && (
               <div className={cn(
-                "px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border",
-                electionConfig?.status === 'live' ? "bg-green-500/10 border-green-500/20 text-green-500" :
-                electionConfig?.status === 'paused' ? "bg-amber-500/10 border-amber-500/20 text-amber-500" :
-                "bg-red-500/10 border-red-500/20 text-red-500"
+                "px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-widest border flex items-center gap-1.5 transition-all duration-500",
+                electionConfig?.status === 'live' ? "bg-green-500/10 border-green-500/20 text-green-500 shadow-[0_0_10px_rgba(34,197,94,0.2)]" :
+                electionConfig?.status === 'paused' ? "bg-amber-500/10 border-amber-500/20 text-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.2)]" :
+                "bg-red-500/10 border-red-500/20 text-red-500 shadow-[0_0_10px_rgba(239,68,68,0.2)]"
               )}>
-                {electionConfig?.status || 'OFFLINE'}
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className={cn("animate-ping absolute inline-flex h-full w-full rounded-full opacity-75", electionConfig?.status === 'live' ? "bg-green-400" : electionConfig?.status === 'paused' ? "bg-amber-400" : "bg-red-400")}></span>
+                  <span className={cn("relative inline-flex rounded-full h-1.5 w-1.5", electionConfig?.status === 'live' ? "bg-green-500" : electionConfig?.status === 'paused' ? "bg-amber-500" : "bg-red-500")}></span>
+                </span>
+                <motion.span
+                  key={electionConfig?.status}
+                  initial={{ opacity: 0, x: -5 }}
+                  animate={{ opacity: 1, x: 0 }}
+                >
+                  {electionConfig?.status || 'OFFLINE'}
+                </motion.span>
               </div>
             )}
           </div>
